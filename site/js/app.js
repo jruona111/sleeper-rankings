@@ -88,7 +88,9 @@
     Chart.defaults.font.size = 12;
     Chart.defaults.color = css("--muted");
     Chart.defaults.borderColor = css("--border");
-    Chart.defaults.animation = matchMedia("(prefers-reduced-motion: reduce)").matches ? false : { duration: 350 };
+    // Merge, never replace: replacing the defaults object drops internals Chart.js needs to animate colors.
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) Chart.defaults.animation = false;
+    else Chart.defaults.set("animation", { duration: 350 });
     Chart.defaults.maintainAspectRatio = false;
     Chart.defaults.plugins.legend.display = false;
     Object.assign(Chart.defaults.plugins.tooltip, {
