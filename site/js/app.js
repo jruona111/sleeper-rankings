@@ -1,13 +1,13 @@
 /* Power rankings front end. Reads JSON from data/ and renders hash routes:
  *   #/rankings[/week]  #/odds  #/awards[/week]  #/stats[/week]  #/team/<roster_id>
- *   #/future[/<year>|/dynasty]  #/future/team/<roster_id>  #/trades[/<transaction_id>]
+ *   #/future[/<year>|/dynasty]  #/future/team/<roster_id>  #/trades[/<transaction_id>|/leaderboard]
  */
 (() => {
   "use strict";
 
   const app = document.getElementById("app");
   const store = { weeks: {}, sort: { key: "rank", dir: 1 }, highlight: null, futureView: "dynasty",
-    tradeFilter: { team: "", season: "" } };
+    tradeFilter: { team: "", season: "", week: "", sort: "newest", mode: "direct" } };
   let charts = [];
 
   // -- helpers --------------------------------------------------------------
@@ -485,6 +485,9 @@
   }
 
   // -- trades --------------------------------------------------------------------
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const teamList = (ids) => ids.map((r) => esc(team(r).team_name)).join(", ");
+
   function pickOutcome(p) {
     const lines = p.later.map((e) => `<li class="chain"><a href="#/trades/${esc(e.transaction_id)}">↳ Traded to ${esc(team(e.to).team_name)} on ${day(e.time)}</a></li>`);
     const o = p.outcome;
@@ -494,7 +497,74 @@
     return `<ul class="chain-list">${lines.join("")}</ul>`;
   }
 
-  function tradeCard(t) {
+  // Where an asset's value stopped counting for the team that received it.
+  function endNote(e) {
+    if (!e) return "";
+    const when = e.week ? ` · ${e.season} wk ${e.week}` : "";
+    if (e.how === "held") return "still on the roster";
+    if (e.how === "dropped") return `dropped${when}`;
+    if (e.how === "traded") return `traded to ${teamList(e.to)}${when}`;
+    if (e.how === "pending") return "pick not made yet";
+    if (e.how === "lost") return "used by another team";
+    return "";
+  }
+  const assetName = (a) => a.kind === "pick"
+    ? `${a.label || pickLabel(a)}${a.drafted ? ` (${esc(a.drafted.player)})` : ""}` : esc(a.label || a.name);
+  const valueText = (v) => `<b>${fmt(v.start_pts)}</b> pts · <b>${fmt(v.par)}</b> PAR`;
+
+  function verdictLine(t, mode) {
+    const v = t.verdict && t.verdict[mode];
+    if (!v) return "";
+    const tag = mode === "tree" ? `<span class="vtag">Tree</span>` : `<span class="vtag">Direct</span>`;
+    if (v.status === "early") {
+      return `<p class="verdict early">${tag}Too early to tell <span class="team-meta">(${plural(v.started_weeks, "started week")})</span></p>`;
+    }
+    if (v.status === "even") return `<p class="verdict">${tag}Even</p>`;
+    return `<p class="verdict win">${tag}${esc(team(v.roster_id).team_name)} +${fmt(v.margin)} PAR</p>`;
+  }
+
+  function breakdown(t) {
+    const sides = t.sides.map((s) => {
+      const items = [...s.players.map((p) => ({ ...p.value, label: p.name, pos: p.pos })),
+        ...s.picks.map((p) => ({ ...p.value, label: pickLabel(p), kind: "pick" }))];
+      const rows = items.map((a) => `<li><span class="bd-name">${assetName(a)}<span class="team-meta">${plural(a.started_weeks, "start")} · ${endNote(a.end)}</span></span>
+        <span class="num">${fmt(a.start_pts)} · <b>${fmt(a.par)}</b></span></li>`).join("");
+      return `<p class="bd-team">${esc(team(s.roster_id).team_name)} <span class="team-meta">pts · PAR</span></p><ul class="bd">${rows || `<li class="team-meta">No players or picks</li>`}</ul>`;
+    }).join("");
+    return `<details class="breakdown"><summary>Breakdown by asset</summary>${sides}</details>`;
+  }
+
+  function treeNode(n, cards) {
+    const card = cards[n.transaction_id];
+    const gave = n.gave.map(esc).join(", ") + (n.gave_other.length ? ` <span class="team-meta">+ ${n.gave_other.map(esc).join(", ")}</span>` : "");
+    const assets = n.assets.map((a) => `<li><span>${assetName(a)}</span><span class="num">${fmt(a.par)}</span></li>`).join("")
+      || `<li class="team-meta">Nothing</li>`;
+    return `<li class="tnode">
+      <a class="tnode-head" href="#/trades/${esc(n.transaction_id)}">Flipped ${gave} to ${teamList(n.with)}</a>
+      <div class="team-meta num">${day(n.time)}${card ? ` · ${esc(card.label)}${card.preseason ? "" : ` ${esc(card.season)}`}` : ""}</div>
+      <ul class="tassets">${assets}</ul>
+      <div class="tnode-val num">${n.share < 0.9995 ? `${pct(n.share, 0)} share · ` : ""}+${fmt(n.par)} PAR · ${fmt(n.start_pts)} pts</div>
+      ${n.children.length ? `<ul class="tchildren">${n.children.map((c) => treeNode(c, cards)).join("")}</ul>` : ""}
+    </li>`;
+  }
+
+  function treeView(t, cards) {
+    return t.sides.map((s) => {
+      const root = [...s.players.map((p) => ({ ...p.value, label: p.name })),
+        ...s.picks.map((p) => ({ ...p.value, label: pickLabel(p), kind: "pick" }))];
+      return `<div class="tree-side">
+        <div class="tnode root">
+          <div class="tnode-head">${avatar(s.roster_id)}<span><b>${esc(team(s.roster_id).team_name)}</b> received</span></div>
+          <ul class="tassets">${root.map((a) => `<li><span>${assetName(a)}</span><span class="num">${fmt(a.par)}</span></li>`).join("") || `<li class="team-meta">Nothing</li>`}</ul>
+          <div class="tnode-val num">Direct +${fmt(s.value.direct.par)} PAR · ${fmt(s.value.direct.start_pts)} pts</div>
+        </div>
+        ${s.tree.length ? `<ul class="tchildren">${s.tree.map((n) => treeNode(n, cards)).join("")}</ul>` : `<p class="team-meta tree-none">Nothing flipped.</p>`}
+        <p class="tree-total num">Tree total: ${valueText(s.value.tree)}</p>
+      </div>`;
+    }).join("");
+  }
+
+  function tradeCard(t, mode) {
     const names = t.sides.map((s) => esc(team(s.roster_id).team_name)).join(" ⇄ ");
     const sides = t.sides.map((s) => {
       const items = [
@@ -502,40 +572,160 @@
         ...s.picks.map((p) => `<li class="asset">${pickLabel(p)} <span class="team-meta">(from ${esc(team(p.original).team_name)})</span>${pickOutcome(p)}</li>`),
         ...(s.faab ? [`<li class="asset">$${s.faab} FAAB</li>`] : []),
       ];
+      const value = s.value ? `<div class="side-val num"><span>${valueText(s.value.direct)}</span>${mode === "tree"
+        ? `<span class="tree-val">Tree ${valueText(s.value.tree)}</span>` : ""}</div>` : "";
       return `<div class="trade-side"><div class="trade-team">${avatar(s.roster_id)}<span><b>${esc(team(s.roster_id).team_name)}</b> received</span></div>
-        <ul class="assets">${items.join("") || `<li class="asset team-meta">Nothing</li>`}</ul></div>`;
+        <ul class="assets">${items.join("") || `<li class="asset team-meta">Nothing</li>`}</ul>${value}</div>`;
     }).join("");
+    const hasTree = t.sides.some((s) => s.tree && s.tree.length);
     return `<section class="panel trade" id="trade-${esc(t.transaction_id)}">
-      <div class="trade-head"><span class="team-meta num">${day(t.time)} · ${esc(t.season)} season${t.week > 1 ? ` · week ${t.week}` : ""}</span></div>
-      <h3>${names}</h3>${sides}</section>`;
+      <div class="trade-head"><span class="team-meta num">${day(t.time)} · ${t.preseason ? esc(t.label) : `${esc(t.season)} season · ${esc(t.label || `week ${t.week}`)}`}</span></div>
+      <h3>${names}</h3>${sides}
+      ${t.verdict ? `<div class="verdicts">${verdictLine(t, "direct")}${mode === "tree" ? verdictLine(t, "tree") : ""}</div>` : ""}
+      ${t.verdict ? `<div class="trade-actions">${breakdown(t)}${mode === "tree" || hasTree
+        ? `<button type="button" class="btn-link" data-tree="${esc(t.transaction_id)}" aria-expanded="false">View tree</button>` : ""}</div>
+        <div class="tree" id="tree-${esc(t.transaction_id)}" hidden></div>` : ""}
+    </section>`;
   }
 
-  async function viewTrades(tid) {
+  // All-time trade results per team, in the chosen mode.
+  function tradeTotals(trades, mode) {
+    const out = {};
+    for (const rid of Object.keys(store.meta.teams)) {
+      out[rid] = { rid: Number(rid), trades: 0, par: 0, pts: 0, w: 0, l: 0, t: 0, best: null, worst: null };
+    }
+    for (const tr of trades) {
+      if (!tr.verdict) continue;
+      const v = tr.verdict[mode];
+      for (const s of tr.sides) {
+        const row = out[s.roster_id] || (out[s.roster_id] = { rid: s.roster_id, trades: 0, par: 0, pts: 0, w: 0, l: 0, t: 0, best: null, worst: null });
+        const val = s.value[mode];
+        row.trades += 1;
+        row.par += val.net_par;
+        row.pts += val.net_start_pts;
+        if (v.status === "win") { if (v.roster_id === s.roster_id) row.w += 1; else row.l += 1; }
+        else if (v.status === "even") row.t += 1;
+        if (v.status !== "early") {
+          if (!row.best || val.net_par > row.best.net) row.best = { trade: tr, net: val.net_par };
+          if (!row.worst || val.net_par < row.worst.net) row.worst = { trade: tr, net: val.net_par };
+        }
+      }
+    }
+    return out;
+  }
+  const tradeRecord = (r) => `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}`;
+  const tradeLink = (x, rid) => {
+    const other = x.trade.sides.filter((s) => s.roster_id !== rid).map((s) => s.roster_id);
+    return `<a class="link" href="#/trades/${esc(x.trade.transaction_id)}">${esc(x.trade.label)}${x.trade.preseason ? "" : ` ${esc(x.trade.season)}`} with ${teamList(other)}</a> <span class="num">${signed(x.net, 1)} PAR</span>`;
+  };
+
+  function teamSummary(rid, data, mode) {
+    const r = tradeTotals(data.trades, mode)[rid];
+    if (!r) return "";
+    return `<section class="panel summary">
+      <div class="trade-team">${avatar(rid)}<span><b>${esc(team(rid).team_name)}</b> · all-time trades${mode === "tree" ? " (trade tree)" : ""}</span></div>
+      <div class="tiles">
+        <div class="tile"><div class="label">Trades</div><div class="value num">${r.trades}</div></div>
+        <div class="tile"><div class="label">Record</div><div class="value num">${tradeRecord(r)}</div><div class="hint">by PAR verdict</div></div>
+        <div class="tile"><div class="label">Net PAR</div><div class="value num ${r.par > 0 ? "pos" : r.par < 0 ? "neg" : ""}">${signed(r.par, 1)}</div></div>
+        <div class="tile"><div class="label">Net start pts</div><div class="value num">${signed(r.pts, 1)}</div></div>
+      </div>
+      ${r.best ? `<p class="sum-line">Best: ${tradeLink(r.best, rid)}</p>` : ""}
+      ${r.worst && r.worst.trade !== r.best.trade ? `<p class="sum-line">Worst: ${tradeLink(r.worst, rid)}</p>` : ""}
+      ${r.best ? "" : `<p class="sum-line team-meta">No trades with a verdict yet.</p>`}
+    </section>`;
+  }
+
+  function leaderboard(data, mode) {
+    const rows = Object.values(tradeTotals(data.trades, mode)).filter((r) => r.trades)
+      .sort((a, b) => b.par - a.par || b.pts - a.pts);
+    const body = rows.map((r, i) => `<tr>
+      <td class="num">${i + 1}</td>
+      <td class="l sticky"><a class="team-link" href="#/trades" data-team="${r.rid}">${esc(team(r.rid).team_name)}</a></td>
+      <td class="num ${r.par > 0 ? "pos" : r.par < 0 ? "neg" : ""}"><b>${signed(r.par, 1)}</b></td>
+      <td class="num">${signed(r.pts, 1)}</td>
+      <td class="num">${tradeRecord(r)}</td>
+      <td class="num">${r.trades}</td></tr>`).join("");
+    return `<div class="table-wrap"><table class="board"><thead><tr><th>#</th><th class="l sticky">Team</th><th>Net PAR</th><th>Net pts</th><th>W-L</th><th>Trades</th></tr></thead>
+      <tbody>${body}</tbody></table></div>
+      <p class="note">Net = what a team got minus what its partners got, summed over every trade${mode === "tree" ? ", following flipped assets down each trade tree" : ""}. W-L counts PAR verdicts and skips trades that are too early to tell. Tap a team to see its trades.</p>`;
+  }
+
+  async function viewTrades(arg) {
     const data = await load("trades", "trades.json");
     if (!data.trades.length) { app.innerHTML = `<p class="empty">No trades yet. Cowards.</p>`; return false; }
     const f = store.tradeFilter;
+    const board = arg === "leaderboard";
+    const tid = board ? null : arg;
+    const mode = f.mode;
     const target = tid ? data.trades.find((t) => t.transaction_id === tid) : null;
-    const visible = (t) => (!f.team || t.roster_ids.includes(Number(f.team))) && (!f.season || t.season === f.season);
-    if (target && !visible(target)) { f.team = ""; f.season = ""; }
-    const shown = data.trades.filter(visible);
+    const visible = (t) => (!f.team || t.roster_ids.includes(Number(f.team))) && (!f.season || t.season === f.season)
+      && (!f.week || (f.week === "pre" ? t.preseason : !t.preseason && t.week === Number(f.week)));
+    if (target && !visible(target)) { f.team = ""; f.season = ""; f.week = ""; }
+    const cards = Object.fromEntries(data.trades.map((t) => [t.transaction_id, t]));
+    const pars = (t) => t.sides.map((s) => (s.value ? s.value[mode].par : 0)).sort((a, b) => b - a);
+    const sorters = {
+      newest: (a, b) => b.time - a.time,
+      margin: (a, b) => { const x = pars(a), y = pars(b); return (y[0] - (y[1] || 0)) - (x[0] - (x[1] || 0)) || b.time - a.time; },
+      total: (a, b) => pars(b).reduce((s, v) => s + v, 0) - pars(a).reduce((s, v) => s + v, 0) || b.time - a.time,
+    };
+    const shown = data.trades.filter(visible).sort(sorters[f.sort] || sorters.newest);
     const teamIds = Object.keys(store.meta.teams).sort((a, b) => team(a).team_name.localeCompare(team(b).team_name));
-    app.innerHTML = `
-      <div class="view-head"><div><h1>Trades</h1>
-        <div class="sub">${shown.length} of ${data.trades.length} trades · newest first · what every pick became</div></div></div>
-      <div class="filters">
+    const weeks = [...new Set(data.trades.filter((t) => !t.preseason).map((t) => t.week))].sort((a, b) => a - b);
+    const sortLabel = { newest: "newest first", margin: "biggest PAR margin", total: "most total value" }[f.sort] || "newest first";
+    const modeSeg = `<div class="seg" role="group" aria-label="Trade value">
+        <button type="button" data-mode="direct" aria-pressed="${mode === "direct"}">Direct value</button>
+        <button type="button" data-mode="tree" aria-pressed="${mode === "tree"}">Trade tree</button></div>`;
+    const viewSeg = `<nav class="seg" aria-label="Trades view">
+        <a href="#/trades" ${board ? "" : `aria-current="page"`}>All trades</a>
+        <a href="#/trades/leaderboard" ${board ? `aria-current="page"` : ""}>Trade Leaderboard</a></nav>`;
+    const filters = `<div class="filters">
         <select class="select" id="trade-team" aria-label="Team"><option value="">All teams</option>${teamIds.map((rid) =>
           `<option value="${rid}" ${String(f.team) === rid ? "selected" : ""}>${esc(team(rid).team_name)}</option>`).join("")}</select>
+        <select class="select" id="trade-sort" aria-label="Sort">${Object.entries({ newest: "Newest", margin: "Biggest margin", total: "Most value" }).map(([k, v]) =>
+          `<option value="${k}" ${(f.sort || "newest") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+      </div>
+      <div class="filters">
         <select class="select" id="trade-season" aria-label="Season"><option value="">All seasons</option>${data.seasons.map((s) =>
           `<option value="${esc(s)}" ${f.season === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
-      </div>
-      <div class="trades">${shown.map(tradeCard).join("") || `<p class="empty">No trades match.</p>`}</div>`;
-    const onFilter = () => {
-      store.tradeFilter = { team: document.getElementById("trade-team").value, season: document.getElementById("trade-season").value };
-      if (location.hash !== "#/trades") history.replaceState(null, "", "#/trades");
-      viewTrades();
-    };
-    document.getElementById("trade-team").addEventListener("change", onFilter);
-    document.getElementById("trade-season").addEventListener("change", onFilter);
+        <select class="select" id="trade-week" aria-label="Week"><option value="">All weeks</option>
+          <option value="pre" ${f.week === "pre" ? "selected" : ""}>Preseason</option>${weeks.map((w) =>
+          `<option value="${w}" ${f.week === String(w) ? "selected" : ""}>Week ${w}</option>`).join("")}</select>
+      </div>`;
+    const explain = `<h2>How trades are judged</h2>
+      <section class="panel"><p class="sub" style="margin:0">Each side gets credit for what it received, from the trade on: a player's points while he stays on that roster (until he's dropped or traded away), and for a pick, the player drafted with it. Only weeks in the starting lineup count. <b>PAR</b> (points above replacement) is the main measure: each started week counts the points above the best non-starter at that position that week (never below zero), so two fringe starters don't beat one star. Verdicts need ${data.min_started_weeks || 4} started weeks between the two sides. <b>Trade tree</b> also follows assets a team flipped later: whatever came back counts toward the original trade, split by recent PAR when the flip included other players.</p></section>`;
+    app.innerHTML = `
+      <div class="view-head"><div><h1>Trades</h1>
+        <div class="sub">${board ? "All-time net value from trades" : `${shown.length} of ${data.trades.length} trades · ${sortLabel}`}</div></div></div>
+      ${viewSeg}${modeSeg}
+      ${board ? leaderboard(data, mode) : `${filters}
+      ${f.team ? teamSummary(Number(f.team), data, mode) : ""}
+      <div class="trades">${shown.map((t) => tradeCard(t, mode)).join("") || `<p class="empty">No trades match.</p>`}</div>`}
+      ${explain}`;
+
+    app.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+      f.mode = b.dataset.mode;
+      if (tid) history.replaceState(null, "", "#/trades");
+      viewTrades(board ? "leaderboard" : undefined);
+    }));
+    app.querySelectorAll("[data-team]").forEach((a) => a.addEventListener("click", () => { f.team = a.dataset.team; }));
+    app.querySelectorAll("[data-tree]").forEach((b) => b.addEventListener("click", () => {
+      const box = document.getElementById(`tree-${b.dataset.tree}`);
+      const open = box.hidden;
+      if (open && !box.innerHTML) box.innerHTML = treeView(cards[b.dataset.tree], cards);
+      box.hidden = !open;
+      b.setAttribute("aria-expanded", String(open));
+      b.textContent = open ? "Hide tree" : "View tree";
+    }));
+    if (!board) {
+      const onFilter = () => {
+        Object.assign(f, { team: document.getElementById("trade-team").value, season: document.getElementById("trade-season").value,
+          week: document.getElementById("trade-week").value, sort: document.getElementById("trade-sort").value });
+        if (location.hash !== "#/trades") history.replaceState(null, "", "#/trades");
+        viewTrades();
+      };
+      ["trade-team", "trade-season", "trade-week", "trade-sort"].forEach((id) => document.getElementById(id).addEventListener("change", onFilter));
+    }
     const el = tid && document.getElementById(`trade-${tid}`);
     if (el) {
       el.scrollIntoView({ block: "start" });

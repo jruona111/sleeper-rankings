@@ -71,3 +71,22 @@ dynasty:
   # Future draft picks: projected points per game added to a team's score in the
   # pick's season and every later projected season.
   pick_values: { 1: 4.0, 2: 1.5, 3: 0.5 }
+
+# Trades tab: how trades are labeled and valued. Formulas are documented in CLAUDE.md.
+trades:
+  # Trades more than preseason_days before week 1 are labeled "Preseason <season>".
+  # Week 1's start comes from Sleeper (current season); list other seasons here,
+  # otherwise the Thursday after Labor Day is used.
+  preseason_days: 7
+  week1_dates: { "2025": "2025-09-04" }
+  # Verdicts need at least this many started player-weeks (both sides combined).
+  min_started_weeks: 4
+  # Trade tree: when a flip mixes tree assets with other assets, the return is split
+  # by each outgoing asset's points above replacement over this many prior weeks.
+  recent_par_weeks: 4
+  # Weekly replacement level = score of the first player outside the starter pool:
+  # dedicated slots x teams, plus each flex slot's share by league-wide usage
+  # ("season" = that season's usage, "week" = that week's), times pool_scale.
+  replacement:
+    flex_usage: season
+    pool_scale: 1.0

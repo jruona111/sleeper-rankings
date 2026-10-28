@@ -33,6 +33,7 @@ class Config:
     blurb_effort: str = "medium"
     blurb_weeks: str = "all"
     dynasty: dict = field(default_factory=dict)  # merged over dynasty.DEFAULTS
+    trades: dict = field(default_factory=dict)   # merged over trade_value.DEFAULTS
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -54,6 +55,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         blurb_effort=str(blurbs.get("effort", "medium")),
         blurb_weeks=str(blurbs.get("weeks", "all")),
         dynasty=raw.get("dynasty") or {},
+        trades=raw.get("trades") or {},
     )
 
 

@@ -205,7 +205,7 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
         write_json(out_dir / "future.json", future)
         log(f"Future rankings: {len(future['teams'])} teams, years {future['years']}")
         trade_data = _optional(log, "Trade history", lambda: trades.load_and_build(
-            client, current, history, state, players), {"seasons": [], "trades": []})
+            client, current, history, state, players, cfg.trades), {"seasons": [], "trades": []})
         write_json(out_dir / "trades.json", trade_data)
         log(f"Trade history: {len(trade_data['trades'])} trades")
 

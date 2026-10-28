@@ -7,6 +7,8 @@ original team's draft_slot) tells who finally used it and on which player.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from .extras import player_name
 from .league import Season
 from .sleeper import SleeperClient
@@ -143,8 +145,12 @@ def resolve_trades(trades: list[dict], drafts: list[dict], players: dict,
 # -- data loading ------------------------------------------------------------------
 
 def load_and_build(client: SleeperClient, current: Season, history: list[Season], state: dict,
-                   players: dict) -> dict:
-    trades, drafts = [], []
+                   players: dict, cfg: dict | None = None) -> dict:
+    from . import trade_value as tv  # trade_value imports this module
+    from .dynasty import fantasy_points
+
+    cfg = tv.settings(cfg)
+    trades, everything, drafts = [], [], []
     for s in [current] + history:
         finished = s.league.get("status") == "complete" or s is not current
         if finished:
@@ -154,10 +160,36 @@ def load_and_build(client: SleeperClient, current: Season, history: list[Season]
         for rnd in rounds:
             done = finished or rnd < s.last_completed
             for t in client.transactions(s.league_id, rnd, completed=done, final=finished):
+                everything.append(dict(t, season=s.season))
                 if t.get("type") == "trade":
-                    trades.append(dict(t, season=s.season))
+                    trades.append(everything[-1])
         for d in client.drafts(s.league):
             full = client.draft(d)
             drafts.append({**d, **full, "picks": client.draft_picks(d), "traded_picks": client.draft_traded_picks(d)})
     cards = resolve_trades(trades, drafts, players, client.traded_picks(current.league))
-    return {"seasons": sorted({c["season"] for c in cards}, reverse=True), "trades": cards}
+
+    seasons = [current] + history
+    results, _, _ = draft_results(drafts, players)
+    draft_times: dict[str, int] = {}
+    for d in drafts:
+        if d.get("status") == "complete":
+            season = str(d.get("season"))
+            draft_times[season] = max(draft_times.get(season, 0), int(d.get("start_time") or d.get("created") or 0))
+    start_weeks = {s.season: int(s.settings.get("start_week") or 1) for s in seasons}
+    league_points: dict[tuple[int, int], dict[str, float]] = {}
+    for s in seasons:
+        finished = s.league.get("status") == "complete" or s is not current
+        scoring = s.league.get("scoring_settings") or {}
+        for week in s.completed_weeks:
+            stats = client.stats(s.season, week, completed=finished or week < s.last_completed) if week <= MAX_ROUND else None
+            if stats:
+                pts = {str(pid): fantasy_points(line, scoring) for pid, line in stats.items() if isinstance(line, dict)}
+                league_points[(int(s.season), week)] = {pid: v for pid, v in pts.items() if v is not None}
+    book = tv.TradeBook(everything, tv.build_ledger(seasons, players, cfg, league_points), players, results,
+                        draft_times, start_weeks, cfg)
+    week1 = {s.season: tv.week1_start(s.season, state, cfg["week1_dates"]) for s in seasons}
+    tv.annotate(cards, book, week1)
+    return {"seasons": sorted({c["season"] for c in cards}, reverse=True), "trades": cards,
+            "min_started_weeks": int(cfg["min_started_weeks"]), "recent_par_weeks": int(cfg["recent_par_weeks"]),
+            "replacement": cfg["replacement"],
+            "week1": {k: datetime.fromtimestamp(v / 1000, timezone.utc).date().isoformat() for k, v in sorted(week1.items())}}

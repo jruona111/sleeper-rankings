@@ -108,6 +108,26 @@ def test_trade_history_resolves_pick_traded_twice(demo_output):
     assert future_pick and future_pick[0]["outcome"] == {"status": "pending", "owner": 3}
 
 
+def test_trade_values_labels_and_trees(demo_output):
+    trades = read(demo_output / "trades.json")["trades"]
+    # Offseason trades (May) are preseason; the in-season swaps keep their week.
+    assert {t["label"] for t in trades if t["preseason"]} == {"Preseason 2026"}
+    assert sorted(t["label"] for t in trades if not t["preseason"]) == ["Week 5", "Week 5"]
+    for t in trades:
+        assert set(t["verdict"]) == {"direct", "tree"}
+        for s in t["sides"]:
+            d, tree = s["value"]["direct"], s["value"]["tree"]
+            assert tree["par"] >= d["par"] - 1e-6 and d["par"] <= d["start_pts"] + 1e-6
+            assert all("value" in p for p in s["players"] + s["picks"])
+        nets = [s["value"]["direct"]["net_par"] for s in t["sides"]]
+        assert abs(sum(nets)) < 0.05
+    # Roster 4 flipped the 1st it got from roster 1: one tree node, the pick it got back.
+    first = next(t for t in trades if t["roster_ids"] == [1, 4])
+    node = next(s for s in first["sides"] if s["roster_id"] == 4)["tree"][0]
+    assert node["gave"] == ["2026 1st"] and node["with"] == [7]
+    assert node["assets"][0]["drafted"]["player"]
+
+
 def test_rankings_are_complete_and_consistent(demo_output):
     meta = json.loads((demo_output / "meta.json").read_text(encoding="utf-8"))
     for week in meta["weeks"]:
