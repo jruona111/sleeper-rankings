@@ -32,6 +32,7 @@ class Config:
     blurb_model: str = "claude-opus-5-5"
     blurb_effort: str = "medium"
     blurb_weeks: str = "all"
+    dynasty: dict = field(default_factory=dict)  # merged over dynasty.DEFAULTS
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -52,6 +53,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         blurb_model=str(blurbs.get("model", "claude-opus-5-5")),
         blurb_effort=str(blurbs.get("effort", "medium")),
         blurb_weeks=str(blurbs.get("weeks", "all")),
+        dynasty=raw.get("dynasty") or {},
     )
 
 

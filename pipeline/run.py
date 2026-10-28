@@ -3,6 +3,9 @@
     python -m pipeline              # real league from config.yaml / LEAGUE_ID
     python -m pipeline --demo       # synthetic league, no network
     python -m pipeline --no-llm     # template blurbs even if ANTHROPIC_API_KEY is set
+    python -m pipeline backfill --from 1 --to 7
+                                    # (re)build and mark weeks 1-7 as backfilled: ranked and
+                                    # charted like any week, but without movement write-ups
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ from pathlib import Path
 
 from .backtest import run_backtest
 from .blurbs import write_blurbs
+from . import dynasty, trades
 from .config import CACHE_PATH, SITE_DATA, Config, league_id_is_set, load_config
 from .extras import describe_mistake, league_history, transaction_notes, weekly_awards
 from .league import Season, load_history, load_season
@@ -72,8 +76,31 @@ def write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
 
 
+def backfilled_weeks(out_dir: Path) -> set[int]:
+    """Weeks an earlier backfill marked as write-up free (kept across rebuilds)."""
+    weeks = set()
+    for path in (out_dir / "rankings").glob("week-*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("backfilled"):
+            weeks.add(int(data["week"]))
+    return weeks
+
+
+def _optional(log, name: str, fn, fallback):
+    """Build an optional tab's data; a failure there never breaks the whole build."""
+    try:
+        return fn()
+    except Exception as err:  # noqa: BLE001
+        log(f"! {name} failed: {err!r}; writing an empty file")
+        return fallback
+
+
 def build(cfg: Config, current: Season, history: list[Season], players: dict, state: dict,
-          cache: Cache, out_dir: Path, demo: bool, use_llm: bool) -> dict:
+          cache: Cache, out_dir: Path, demo: bool, use_llm: bool, client: SleeperClient | None = None,
+          backfill: set[int] | None = None) -> dict:
     t0 = time.time()
     log = lambda msg: print(f"[{time.time() - t0:5.1f}s] {msg}")
     if not current.completed_weeks:
@@ -86,11 +113,14 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
         cache.save_rankings(current.league_id, week, data["rows"])
     log(f"Ranked {len(rankings)} weeks")
 
+    # Backfilled weeks are ranked from the same week-by-week data but get no write-ups.
+    backfilled = (backfilled_weeks(out_dir) | set(backfill or ())) & set(rankings)
     facts = {w: build_facts(current, weeks, rankings, w, players) for w in rankings}
     latest = max(rankings) if rankings else 0
     llm_weeks = set(rankings) if cfg.blurb_weeks == "all" else {latest}
-    blurbs, blurb_source = write_blurbs(facts, cache, cfg.blurb_model, cfg.blurb_effort, llm_weeks, use_llm)
-    log(f"Blurbs written ({blurb_source})")
+    blurbs, blurb_source = write_blurbs({w: f for w, f in facts.items() if w not in backfilled}, cache,
+                                        cfg.blurb_model, cfg.blurb_effort, llm_weeks, use_llm)
+    log(f"Blurbs written ({blurb_source}); backfilled without write-ups: {sorted(backfilled) or 'none'}")
 
     # Fresh output directory (keeps stale weeks from lingering).
     if out_dir.exists():
@@ -101,7 +131,7 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
         rows = []
         for r in data["rows"]:
             rid = r["roster_id"]
-            text, src = blurbs[week][rid]
+            text, src = blurbs[week][rid] if week in blurbs else (None, None)
             rows.append({
                 "rank": r["rank"], "prev_rank": r["prev_rank"], "change": r["change"], "roster_id": rid,
                 "score": r["score"], "composite": round(r["composite"], 4), "z": r["z"], "driver": r["driver"],
@@ -109,7 +139,8 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
                 "week": weeks[week][rid].to_json() if rid in weeks[week] else None,
                 "blurb": text, "blurb_source": src, "facts": facts[week][rid],
             })
-        write_json(out_dir / "rankings" / f"week-{week}.json", {"week": week, "rankings": rows})
+        write_json(out_dir / "rankings" / f"week-{week}.json",
+                   {"week": week, "backfilled": week in backfilled, "rankings": rows})
 
     latest_metrics = rankings[latest]["metrics"] if latest else {}
     rem_sos = remaining_sos(current, latest_metrics) if latest else {}
@@ -167,6 +198,17 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
     write_json(out_dir / "transactions.json", transaction_notes(current, weeks, players))
     write_json(out_dir / "history.json", {k: v for k, v in hist.items() if k != "h2h"})
 
+    if client is not None:
+        power_ranks = {r["roster_id"]: r["rank"] for r in rankings[latest]["rows"]} if latest else {}
+        future = _optional(log, "Future rankings", lambda: dynasty.load_and_build(
+            client, current, history, players, power_ranks, cfg.dynasty, log), {"years": [], "teams": []})
+        write_json(out_dir / "future.json", future)
+        log(f"Future rankings: {len(future['teams'])} teams, years {future['years']}")
+        trade_data = _optional(log, "Trade history", lambda: trades.load_and_build(
+            client, current, history, state, players), {"seasons": [], "trades": []})
+        write_json(out_dir / "trades.json", trade_data)
+        log(f"Trade history: {len(trade_data['trades'])} trades")
+
     backtest = run_backtest(seasons, cfg.weights, cfg.decay)
     write_json(out_dir / "backtest.json", backtest)
     best = max(backtest["results"], key=lambda r: r["accuracy"] or 0)
@@ -191,6 +233,7 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
         "nfl_state": {k: state.get(k) for k in ("season", "week", "season_type")},
         "weeks": sorted(rankings),
         "latest_week": latest,
+        "backfilled_weeks": sorted(backfilled),
         "teams": {rid: t.to_json() for rid, t in current.teams.items()},
         "weights": cfg.weights,
         "decay": cfg.decay,
@@ -204,12 +247,28 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", nargs="?", choices=["build", "backfill"], default="build",
+                        help="build (default) or backfill a range of past weeks")
+    parser.add_argument("--from", dest="from_week", type=int, help="backfill: first week (default 1)")
+    parser.add_argument("--to", dest="to_week", type=int, help="backfill: last week (default latest completed)")
     parser.add_argument("--demo", action="store_true", help="use a synthetic league (no network)")
     parser.add_argument("--no-llm", action="store_true", help="template blurbs only")
     parser.add_argument("--out", type=Path, default=SITE_DATA, help="output directory (default site/data)")
     args = parser.parse_args()
     cfg, current, history, players, state, client = load_all(demo=args.demo)
-    build(cfg, current, history, players, state, client.cache, args.out, args.demo, not args.no_llm)
+    backfill: set[int] = set()
+    if args.command == "backfill":
+        done = current.completed_weeks
+        lo = args.from_week or (done[0] if done else 1)
+        hi = args.to_week or (done[-1] if done else 0)
+        missing = [w for w in range(lo, hi + 1) if w not in done]
+        if not done or lo > hi or missing:
+            sys.exit(f"Can only backfill completed weeks {done[0] if done else '-'}-{done[-1] if done else '-'}"
+                     f"{f' (week {missing[0]} is not complete)' if missing else ''}.")
+        backfill = set(range(lo, hi + 1))
+        print(f"Backfilling weeks {lo}-{hi} (rankings and charts, no write-ups)")
+    build(cfg, current, history, players, state, client.cache, args.out, args.demo, not args.no_llm,
+          client=client, backfill=backfill)
     print(f"Sleeper API requests this run: {client.fetches}")
 
 

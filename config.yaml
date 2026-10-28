@@ -32,3 +32,42 @@ blurbs:
   # Generate AI blurbs for every week ("all") or only the latest week ("latest").
   # Blurbs are cached, so "all" only costs extra on the first run.
   weeks: all
+
+# Future Rankings tab: 3-year dynasty outlook. Formulas are documented in CLAUDE.md.
+dynasty:
+  # Combined Dynasty score = weighted average of the Year 1/2/3 team scores.
+  year_weights: [0.5, 0.3, 0.2]
+  # Baseline points per game: each game counts recency_decay ** games_ago, over the
+  # current and previous season. prior_games pseudo-games at the position's
+  # replacement level keep small samples (and rookies with no games) in check.
+  recency_decay: 0.9
+  prior_games: 2
+  # Young players (age <= young_age or years_exp <= young_years_exp) blend points
+  # with snap share and opportunity volume (QBs: points + snaps only).
+  young_age: 25
+  young_years_exp: 3
+  blend: { points: 0.6, snaps: 0.2, opportunity: 0.2 }
+  qb_blend: { points: 0.8, snaps: 0.2 }
+  snap_trend_weight: 0.5     # adjusted snap share = level + weight * (last 3 games - previous 3 games)
+  rb_rush_weight: 0.5        # one RB carry counts as this many targets of opportunity
+  # Opportunity adjustments (fractions of the projection; summed, then clamped).
+  opportunity:
+    behind_aging_starter: 0.15   # backup (depth order 2) behind a starter at or past his age cliff
+    behind_injured_starter: 0.10 # backup behind a starter who is Out/IR/PUP/Doubtful/Suspended
+    behind_young_starter: -0.10  # backup behind an entrenched starter (age <= 26, snap share >= 65%)
+    snap_trend: 0.5              # x (last-3 minus previous-3 snap share), capped at +/- snap_trend_cap
+    snap_trend_cap: 0.10
+    max_total: 0.25              # overall opportunity adjustment is clamped to +/- this
+    year_ramp: [0.5, 1.0, 1.0]   # share of the adjustment applied in Year 1/2/3
+    rising_threshold: 0.05       # young players at or above this adjustment are flagged "rising"
+  # Age curves: grow until peak_age, flat until cliff_age, then decline each year.
+  # The multiplier compounds year over year from the player's current age.
+  age_curves:
+    RB: { growth: 0.06, peak_age: 24, cliff_age: 27, decline: 0.15 }
+    WR: { growth: 0.05, peak_age: 25, cliff_age: 29, decline: 0.10 }
+    TE: { growth: 0.07, peak_age: 26, cliff_age: 30, decline: 0.10 }
+    QB: { growth: 0.04, peak_age: 27, cliff_age: 33, decline: 0.07 }
+  no_team_factor: 0.25       # players without an NFL team (free agents, retired)
+  # Future draft picks: projected points per game added to a team's score in the
+  # pick's season and every later projected season.
+  pick_values: { 1: 4.0, 2: 1.5, 3: 0.5 }

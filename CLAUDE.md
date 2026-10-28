@@ -5,7 +5,7 @@ Sleeper fantasy football power rankings: a Python pipeline writes JSON; a static
 ## Layout
 
 ```
-config.yaml                 league_id, ranking weights, decay, simulations, blurb model
+config.yaml                 league_id, ranking weights, decay, simulations, blurb model, dynasty model
 requirements.txt
 pipeline/
   run.py                    entry point (python -m pipeline); orchestrates everything, writes site/data/*
@@ -18,10 +18,12 @@ pipeline/
   playoffs.py               Monte Carlo playoff/bye/#1 seed/title odds
   extras.py                 weekly awards, transaction notes, all-time records + head-to-head
   storylines.py             per-team "facts" object for each week's blurb
+  dynasty.py                Future Rankings: per-player 3-year projections, projected lineups, pick value
+  trades.py                 full trade history; draft-pick ownership chains and outcomes
   blurbs.py                 Claude blurbs (structured JSON output) with template fallback; cached by facts hash
   backtest.py               week-N ranks predicting week-N+1 winners; python -m pipeline.backtest
   demo.py                   synthetic two-season league in Sleeper API shapes (--demo)
-  tests/                    pytest: lineup optimizer, metrics, end-to-end demo build
+  tests/                    pytest: lineup optimizer, metrics, dynasty model, pick chains, end-to-end demo build
 site/
   index.html, css/style.css, js/app.js   vanilla JS SPA with hash routes; Chart.js 4.4.1 from cdnjs
   manifest.webmanifest, icons/           Add to Home Screen
@@ -39,6 +41,7 @@ python -m pipeline                          # real league (config.yaml / LEAGUE_
 python -m pipeline --demo                   # synthetic league, no network, in-memory cache
 python -m pipeline --no-llm                 # force template blurbs
 python -m pipeline --out /tmp/data          # write JSON elsewhere
+python -m pipeline backfill --from 1 --to 7 # full build; marks weeks 1-7 as backfilled (no write-ups); safe to rerun
 python -m pipeline.backtest [--demo]        # print weight-set accuracy table
 python -m http.server 8765 --directory site # view the site
 ```
@@ -59,6 +62,26 @@ python -m http.server 8765 --directory site # view the site
 - **Playoff sim**: Normal(mean, sd) per team, both shrunk toward league values with 2 pseudo-games. Remaining schedule from Sleeper's future-week matchups (round-robin fallback). Seeding: division winners first (if divisions), then wins, then PF. Bracket: byes to top seeds, fixed seeding unless `playoff_seed_type == 1`. Once in the playoffs, the real `winners_bracket` is simulated forward.
 - **Blurbs**: one Claude call per week (all uncached teams) with JSON-schema output, `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). Cache key = sha256(facts + model + PROMPT_VERSION); bump `PROMPT_VERSION` in blurbs.py to regenerate.
 - **Owner identity across seasons** = Sleeper `owner_id`; orphan rosters fall back to `"<season>:<roster_id>"`.
+- **Backfill**: every build ranks every completed week from data through that week only (week N never sees week N+1). `backfill --from A --to B` runs the normal build and marks weeks A..B `backfilled`: ranked and charted, but no blurbs (`blurb`/`blurb_source` null) and no Claude call. The mark lives in the committed `rankings/week-N.json` (`"backfilled": true`) and every later build carries it over, so CI keeps it. To un-backfill a week, delete its JSON and rebuild.
+- **Weekly player stats** (`/stats/nfl/regular/{season}/{week}`, unofficial): previous NFL season weeks 1–18 + current completed weeks; cached forever once final. A failed week is skipped (rostered players' matchup points still count). Points = Σ `scoring_settings[k]·stat[k]`, falling back to `pts_ppr`; a rostered player's actual matchup points win when present.
+- **Trades**: transaction rounds 0–18 of every season (current season: 0 through `state.week`; offseason trades are filed in round 1), type `trade`, status `complete`, deduped by `transaction_id`. A pick is keyed `(season, round, original roster_id)`; its chain = every trade's `draft_picks` entry with that key, ordered by `status_updated`. Draft outcome: `/league/{id}/drafts` → `/draft/{id}` (`slot_to_roster_id`) + `/draft/{id}/picks`; a pick's original roster = `slot_to_roster_id[draft_slot]` (traded picks keep the original slot), falling back to the draft's `traded_picks` when unambiguous. Outcome `made` (player + who used it), `unused` (that season's draft is complete without it) or `pending` (owner = chain end, overridden by `/draft/{id}/traded_picks` and `/league/{id}/traded_picks`). Team names are the current team for the roster_id.
+
+## Future Rankings model (dynasty.py; parameters in config.yaml `dynasty:`)
+
+Years = the next three seasons (current season + 1, or the current season if the league is `pre_draft`/`drafting`). Per player:
+- **Games**: weeks with `gp`/`off_snp`/`gms_active` > 0. Snap share = `off_snp / tm_off_snp`; opportunities = `rec_tgt` + `rb_rush_weight·rush_att` (RB only).
+- **Recency weights**: game i of n (chronological) gets `recency_decay^(n-1-i)`; W = Σ weights. PPG, snap level and opportunities/game are weighted means.
+- **Replacement level** (per position) = PPG of the player ranked `round(1.5 · teams · max(1, dedicated slots))` among players with ≥ 4 games.
+- **Shrink**(x) = (W·x + k·repl) / (W + k), k = `prior_games`. A player with no games projects at replacement level.
+- **Points component** = shrink(PPG).
+- **Young** (QB/RB/WR/TE) = age ≤ `young_age` or years_exp ≤ `young_years_exp`. Young RB/WR/TE: base = 0.6·points + 0.2·snaps + 0.2·opportunity (`blend`); young QB: 0.8·points + 0.2·snaps (`qb_blend`); everyone else: base = points. Missing components drop out and the weights renormalize.
+  - snaps = shrink(a + b·clamp(snap + `snap_trend_weight`·trend, 0, 1)); opportunity = shrink(a + b·opp/game), where (a, b) is a least-squares fit of PPG on that measure over the position's regulars (≥ 4 games, snap share ≥ 20%).
+  - trend = mean snap share of the last 3 games − the 3 before (latest season if it has ≥ 4 games with snaps).
+- **Opportunity adjustment** `adj` (sum, clamped to ±`max_total`): for depth_chart_order 2 behind the order-1 player at the same NFL team/depth position: + `behind_injured_starter` if the starter is Out/IR/PUP/Doubtful/Sus; + `behind_aging_starter` if the starter's age ≥ his position's `cliff_age`; otherwise + `behind_young_starter` (negative) if the starter is ≤ 26 with snap share ≥ 65%. Plus clamp(`snap_trend`·trend, ±`snap_trend_cap`) with ≥ 4 snap games. "Rising" = young and adj ≥ `rising_threshold`.
+- **Age curve**: age on Sept 1 (birth_date, else `age` + years). Each year from age a to a+1: × (1+growth) if a+1 ≤ peak_age; × 1 if a+1 ≤ cliff_age; else × (1−decline); compounded. K/DEF: no curve. "Past cliff" = age > cliff_age.
+- **Projection** for year k (0-based) = base · age_mult(k+1 years) · (1 + adj·`year_ramp[k]`) · (`no_team_factor` if no NFL team).
+
+Per team and year: score = optimal lineup (lineup.optimal_lineup over the roster's `players`, slots from `roster_positions`) on projected PPG + Σ `pick_values[round]` for owned picks with season ≤ year. Owned picks = each roster's own picks for the projected seasons × `draft_rounds`, reassigned by `/league/{id}/traded_picks`. Ranks per year; Dynasty = Σ `year_weights`·score / Σ weights. Top 3 = best projected starters (Dynasty: by weighted projection). Aging core = that year's top 5 starters past their cliff (Dynasty: year 1).
 
 ## JSON schemas (site/data)
 
@@ -75,6 +98,7 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
   "nfl_state": { "season": "2026", "week": 9, "season_type": "regular" },
   "weeks": [1, 2, 3],               // ranked (completed) weeks
   "latest_week": 3,                 // 0 before week 1 is complete
+  "backfilled_weeks": [1, 2],       // ranked weeks without write-ups
   "teams": { "<roster_id>": Team },
   "weights": { "pf": 0.3, "max_pf": 0.25, "win_pct": 0.25, "efficiency": 0.15, "recent_form": 0.05 },
   "decay": 0.85,
@@ -86,14 +110,14 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
 
 ### rankings/week-N.json
 ```jsonc
-{ "week": 8, "rankings": [ {
+{ "week": 8, "backfilled": false, "rankings": [ {
     "rank": 1, "prev_rank": 2 | null, "change": 1,      // positive = moved up
     "roster_id": 4, "score": 92.9, "composite": 1.21,
     "z": { "pf": 1.4, "…": 0 },
     "driver": { "metric": "win_pct", "label": "win percentage", "delta": 0.08, "z_before": 0.5, "z_after": 0.9 } | null,
     "metrics": SeasonMetrics,   // season-to-date through week N
     "week": TeamWeek | null,    // this week's game
-    "blurb": "…", "blurb_source": "anthropic" | "template",
+    "blurb": "…" | null, "blurb_source": "anthropic" | "template" | null,   // null on backfilled weeks
     "facts": { … }              // storyline facts given to the blurb writer
 } ] }
 ```
@@ -121,6 +145,36 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
 ### transactions.json
 `{ "best_pickups": [{week, roster_id, player_id, player, type, faab, points, started_points, weeks}], "trades": [{week, transaction_id, leader, margin, sides: [{roster_id, received: [{player_id, player, points, started_points}], picks: ["2027 round 3"], started_points}]}] }` — points count only weeks the player was on that roster from the transaction week on.
 
+### future.json
+```jsonc
+{ "years": [2027, 2028, 2029], "year_weights": [0.5, 0.3, 0.2], "pick_values": {"1": 4.0, "…": 0}, "age_curves": {},
+  "replacement": {"RB": 9.7}, "young_age": 25, "young_years_exp": 3, "stats_weeks": 25, "as_of": {"season": "2026", "week": 7},
+  "teams": [ {                                   // sorted by dynasty rank
+    "roster_id": 4, "power_rank": 1 | null,
+    "views": { "2027": { "score", "rank", "lineup_pts", "picks_pts", "top": [PlayerRef], "aging": [PlayerRef] },
+               "dynasty": { "score", "rank", "top": [PlayerRef], "aging": [PlayerRef] } },
+    "rising": [{ "player_id", "name", "pos", "age", "reasons": ["backup to aging X (30)"] }],
+    "picks": [{ "season": "2027", "round": 1, "original": 4 }],
+    "players": [{ "player_id", "name", "pos", "nfl_team", "age", "young", "games", "ppg", "base",
+                  "components": {"points", "snaps?", "opportunity?"}, "adj", "reasons",
+                  "proj": [y1, y2, y3], "starter": [bool, bool, bool] }] } ] }
+// PlayerRef = { player_id, name, pos, age (in that year), points }
+```
+
+### trades.json
+```jsonc
+{ "seasons": ["2026", "2025"],
+  "trades": [ {                                  // newest first
+    "transaction_id": "…", "season": "2026", "week": 1, "time": 1787180305682,   // ms epoch; offseason trades are week 1
+    "roster_ids": [2, 4],
+    "sides": [ { "roster_id": 2, "faab": 0,
+      "players": [{ "player_id", "name", "pos" }],
+      "picks": [{ "season": "2026", "round": 1, "original": 4,
+                  "later": [{ "transaction_id", "time", "from", "to" }],   // later trades of this pick
+                  "outcome": { "status": "made", "player_id", "player", "pos", "roster_id", "pick_no" }
+                           | { "status": "pending", "owner": 3 } | { "status": "unused" } }] } ] } ] }
+```
+
 ### history.json
 `{ "seasons": [{season, league_id, name, champion_owner, complete}], "alltime": [AllTime] }` where `AllTime = {owner_id, name, team_name, seasons: [..], wins, losses, ties, win_pct, pf, pa, playoff_wins, playoff_losses, championships}`. (Head-to-head lives per team in teams.json.)
 
@@ -129,7 +183,8 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
 
 ## Front end notes
 
-- Hash routes: `#/rankings[/week]`, `#/odds`, `#/awards[/week]`, `#/stats[/week]`, `#/team/<roster_id>`.
+- Hash routes: `#/rankings[/week]`, `#/odds`, `#/awards[/week]`, `#/stats[/week]`, `#/team/<roster_id>`, `#/future[/<year>|/dynasty]`, `#/future/team/<roster_id>`, `#/trades[/<transaction_id>]` (scrolls to and highlights that card, clearing filters that would hide it).
+- Backfilled weeks (`blurb: null`) render without a blurb paragraph.
 - Colors are CSS tokens on `:root`; dark mode via `prefers-color-scheme` plus a `data-theme` override saved in localStorage. Charts read tokens at render time and re-render on theme change.
 - Designed at 380px first. Check new UI at phone width with no horizontal page scroll (only `.table-wrap` scrolls sideways).
 - All user-provided strings (team/player names) go through `esc()`.

@@ -6,7 +6,7 @@ import pytest
 from pipeline import blurbs
 from pipeline.config import load_config
 from pipeline.rankings import rank_week, zscores
-from pipeline.run import build, load_all
+from pipeline.run import backfilled_weeks, build, load_all
 from pipeline.sleeper import Cache
 
 
@@ -31,14 +31,81 @@ def demo_output(tmp_path_factory):
     out = tmp_path_factory.mktemp("data")
     cfg, current, history, players, state, client = load_all(demo=True)
     cfg.simulations = 500
-    build(cfg, current, history, players, state, client.cache, out, demo=True, use_llm=False)
+    build(cfg, current, history, players, state, client.cache, out, demo=True, use_llm=False, client=client)
     return out
+
+
+def read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_demo_build_writes_every_file(demo_output):
     for name in ["meta.json", "teams.json", "playoffs.json", "awards.json", "transactions.json",
-                 "history.json", "backtest.json", "rankings/week-1.json"]:
+                 "history.json", "backtest.json", "rankings/week-1.json", "future.json", "trades.json"]:
         assert (demo_output / name).exists(), name
+
+
+def test_backfill_drops_writeups_and_survives_rebuilds(tmp_path):
+    cfg, current, history, players, state, client = load_all(demo=True)
+    cfg.simulations = 200
+    build(cfg, current, history, players, state, client.cache, tmp_path, demo=True, use_llm=False, backfill={1, 2, 3})
+    meta = read(tmp_path / "meta.json")
+    assert meta["backfilled_weeks"] == [1, 2, 3] and meta["weeks"] == list(range(1, 9))
+    for week in meta["weeks"]:
+        data = read(tmp_path / f"rankings/week-{week}.json")
+        assert data["backfilled"] == (week <= 3)
+        assert all((r["blurb"] is None) == (week <= 3) for r in data["rankings"])
+        assert all(r["rank"] and r["score"] is not None for r in data["rankings"])
+    # A plain rebuild (and rerunning the backfill) keeps the same weeks write-up free.
+    build(cfg, current, history, players, state, client.cache, tmp_path, demo=True, use_llm=False)
+    assert backfilled_weeks(tmp_path) == {1, 2, 3}
+    build(cfg, current, history, players, state, client.cache, tmp_path, demo=True, use_llm=False, backfill={1, 2, 3})
+    assert read(tmp_path / "meta.json")["backfilled_weeks"] == [1, 2, 3]
+
+
+def test_backfilled_rankings_use_only_data_through_that_week(tmp_path):
+    """Ranking week 3 from a season that stops after week 3 gives identical results."""
+    cfg, current, history, players, state, client = load_all(demo=True)
+    cfg.simulations = 200
+    build(cfg, current, history, players, state, client.cache, tmp_path / "full", demo=True, use_llm=False)
+    current.completed_weeks = [1, 2, 3]
+    current.matchups = {w: current.matchups[w] for w in (1, 2, 3)}
+    build(cfg, current, history, players, state, client.cache, tmp_path / "cut", demo=True, use_llm=False)
+    full = read(tmp_path / "full/rankings/week-3.json")["rankings"]
+    cut = read(tmp_path / "cut/rankings/week-3.json")["rankings"]
+    strip = lambda rows: [{k: r[k] for k in ("roster_id", "rank", "score", "z", "metrics", "prev_rank")} for r in rows]
+    assert strip(full) == strip(cut)
+
+
+def test_future_rankings_cover_every_team(demo_output):
+    future = read(demo_output / "future.json")
+    meta = read(demo_output / "meta.json")
+    assert future["years"] == [2027, 2028, 2029]
+    assert len(future["teams"]) == len(meta["teams"])
+    for view in ["2027", "2028", "2029", "dynasty"]:
+        ranks = sorted(t["views"][view]["rank"] for t in future["teams"])
+        assert ranks == list(range(1, len(meta["teams"]) + 1))
+    for t in future["teams"]:
+        assert len(t["views"]["2027"]["top"]) == 3
+        assert all(len(p["proj"]) == 3 for p in t["players"])
+        assert t["power_rank"] is not None
+    # Roster 3 got roster 10's 2027 3rd in a trade.
+    picks3 = next(t for t in future["teams"] if t["roster_id"] == 3)["picks"]
+    assert {"season": "2027", "round": 3, "original": 10} in picks3
+
+
+def test_trade_history_resolves_pick_traded_twice(demo_output):
+    trades = read(demo_output / "trades.json")
+    assert trades["seasons"] == ["2026", "2025"]
+    times = [t["time"] for t in trades["trades"]]
+    assert times == sorted(times, reverse=True)
+    first = next(t for t in trades["trades"] if t["roster_ids"] == [1, 4])
+    pick = next(s for s in first["sides"] if s["roster_id"] == 4)["picks"][0]
+    assert [e["to"] for e in pick["later"]] == [7]
+    assert pick["outcome"]["status"] == "made" and pick["outcome"]["roster_id"] == 7
+    assert next(s for s in first["sides"] if s["roster_id"] == 4)["faab"] == 15
+    future_pick = [p for t in trades["trades"] for s in t["sides"] for p in s["picks"] if p["season"] == "2027"]
+    assert future_pick and future_pick[0]["outcome"] == {"status": "pending", "owner": 3}
 
 
 def test_rankings_are_complete_and_consistent(demo_output):

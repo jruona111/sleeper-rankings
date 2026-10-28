@@ -2,12 +2,15 @@
 
 Builds API-shaped responses for two seasons (a finished 2025 season with
 median scoring and a 2026 season in progress) and serves them through the
-same SleeperClient interface as the real API.
+same SleeperClient interface as the real API. Also: player ages and depth
+charts, weekly player stats, a 2026 rookie draft, and offseason trades in which
+one 1st-round pick changes hands twice before it is used.
 """
 from __future__ import annotations
 
 import random
 import re
+from datetime import datetime, timezone
 
 CURRENT_ID = "900000000000000002"
 PREVIOUS_ID = "900000000000000001"
@@ -35,6 +38,17 @@ SLOT_OK = {"QB": {"QB"}, "RB": {"RB"}, "WR": {"WR"}, "TE": {"TE"}, "K": {"K"}, "
            "FLEX": {"RB", "WR", "TE"}, "SUPER_FLEX": {"QB", "RB", "WR", "TE"}}
 MEAN = {"QB": 18, "RB": 10, "WR": 10, "TE": 7, "K": 8, "DEF": 7}
 SD = {"QB": 6, "RB": 6, "WR": 6.5, "TE": 4.5, "K": 3.5, "DEF": 5}
+AGE_RANGE = {"QB": (22, 38), "RB": (21, 30), "WR": (21, 33), "TE": (22, 33), "K": (22, 40)}
+DEPTH_POS = {"QB": "QB", "RB": "RB", "WR": "LWR", "TE": "TE", "K": "K"}
+ROOKIES = 36
+
+
+def _ts(season: str, week: int, day: int = 0) -> int:
+    """Millisecond timestamp for a transaction in a given week (week 0 = offseason)."""
+    base = datetime(int(season), 9, 2, 12, tzinfo=timezone.utc).timestamp()
+    if week == 0:
+        base -= 120 * 86400  # early May
+    return int((base + (7 * max(0, week - 1) + day) * 86400) * 1000)
 
 
 def _players(rng: random.Random) -> dict:
@@ -51,6 +65,23 @@ def _players(rng: random.Random) -> dict:
                 "team": rng.choice(NFL),
                 "_talent": max(1.0, MEAN[pos] * (1.6 - 1.2 * i / n) + rng.gauss(0, 1.5)),
             }
+    # Ages, experience, injuries, rookies.
+    for p in players.values():
+        lo, hi = AGE_RANGE[p["position"]]
+        p["age"] = rng.randint(lo, hi)
+        p["years_exp"] = max(0, p["age"] - 22 + rng.randint(-1, 1))
+        p["injury_status"] = "Out" if rng.random() < 0.05 else None
+        p["status"] = "Active"
+    rookies = rng.sample([pid for pid, p in players.items() if p["position"] in ("RB", "WR", "TE")], ROOKIES)
+    for pid in rookies:
+        players[pid].update(age=rng.randint(21, 22), years_exp=0, _rookie=True)
+    # Depth charts: by talent within each NFL team and position.
+    for pos, dpos in DEPTH_POS.items():
+        for team in NFL:
+            group = sorted((p for p in players.values() if p["team"] == team and p["position"] == pos),
+                           key=lambda p: -p["_talent"])
+            for order, p in enumerate(group, start=1):
+                p["depth_chart_position"], p["depth_chart_order"] = dpos, order
     # A QB/TE hybrid makes the lineup optimizer earn its keep.
     hybrid = next(p for p in players.values() if p["position"] == "QB" and p["_talent"] < 12)
     hybrid["fantasy_positions"] = ["QB", "TE"]
@@ -83,16 +114,75 @@ class DemoLeague:
                                      "season_type": "regular", "display_week": COMPLETED_WEEKS + 1}
         self.routes["/players/nfl"] = {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
                                        for k, v in self.players.items()}
+        self.recorded: dict[tuple[str, int, str], float] = {}
         self._build_season(PREVIOUS_ID, "2025", None, completed=17, median=True, shift=3)
         self._build_season(CURRENT_ID, "2026", PREVIOUS_ID, completed=COMPLETED_WEEKS, median=False, shift=0)
+        self._build_stats("2025", 18)
+        self._build_stats("2026", COMPLETED_WEEKS)
+        self._build_rookie_draft()
 
     # -- helpers ------------------------------------------------------------
     def _points(self, pid: str, week: int) -> float:
+        key = (self._season, week, pid)
+        if key in self.recorded:  # same player, same week: same score everywhere
+            return self.recorded[key]
         p = self.players[pid]
         if p["_bye"] == week:
             return 0.0
         pts = self.rng.gauss(p["_talent"], SD[p["position"]] * (0.6 + p["_talent"] / (2.5 * MEAN[p["position"]])))
-        return round(max(-2.0, pts), 2)
+        self.recorded[key] = round(max(-2.0, pts), 2)
+        return self.recorded[key]
+
+    def _build_stats(self, season: str, weeks: int) -> None:
+        """/stats/nfl/regular/<season>/<week>: PPR points, snaps, targets, carries."""
+        self._season = season
+        for week in range(1, weeks + 1):
+            out = {}
+            for pid, p in self.players.items():
+                if p["_bye"] == week or (p.get("_rookie") and season == "2025"):
+                    continue
+                pts = self._points(pid, week)
+                line = {"gp": 1.0, "pts_ppr": pts, "pts_half_ppr": pts, "pts_std": pts}
+                if p["position"] in ("QB", "RB", "WR", "TE"):
+                    order = p.get("depth_chart_order") or 3
+                    share = max(0.05, min(1.0, (1.05 - 0.3 * (order - 1)) * self.rng.uniform(0.85, 1.05)))
+                    line.update(off_snp=round(65 * share), tm_off_snp=65.0)
+                    if p["position"] != "QB":
+                        line["rec_tgt"] = float(max(0, round(self.rng.gauss(p["_talent"] * 0.6 * share, 1.5))))
+                    if p["position"] in ("QB", "RB"):
+                        carries = p["_talent"] * share * (1.2 if p["position"] == "RB" else 0.2)
+                        line["rush_att"] = float(max(0, round(self.rng.gauss(carries, 2))))
+                out[pid] = line
+            self.routes[f"/stats/nfl/regular/{season}/{week}"] = out
+
+    def _build_rookie_draft(self) -> None:
+        """2026 rookie draft (3 rounds, linear). Roster 1's 1st went 1 -> 4 -> 7 in the
+        offseason trades, and roster 7 used it."""
+        n, draft_id = 12, "910000000000000002"
+        traded = [{"season": "2026", "round": 1, "roster_id": 1, "owner_id": 7, "previous_owner_id": 4, "draft_id": draft_id},
+                  {"season": "2026", "round": 2, "roster_id": 7, "owner_id": 4, "previous_owner_id": 7, "draft_id": draft_id}]
+        owner = {(t["round"], t["roster_id"]): t["owner_id"] for t in traded}
+        rookies = sorted((pid for pid, p in self.players.items() if p.get("_rookie")),
+                         key=lambda pid: -self.players[pid]["_talent"])
+        picks = []
+        for rnd in range(1, 4):
+            for slot in range(1, n + 1):
+                pid = rookies.pop(0)
+                info = self.players[pid]
+                picks.append({"draft_id": draft_id, "round": rnd, "draft_slot": slot, "pick_no": (rnd - 1) * n + slot,
+                              "roster_id": owner.get((rnd, slot), slot), "player_id": pid, "picked_by": "",
+                              "metadata": {"first_name": info["first_name"], "last_name": info["last_name"],
+                                           "position": info["position"]}})
+        draft = {"draft_id": draft_id, "league_id": CURRENT_ID, "season": "2026", "status": "complete", "type": "linear",
+                 "start_time": _ts("2026", 0, 10), "settings": {"rounds": 3, "teams": n},
+                 "slot_to_roster_id": {str(i): i for i in range(1, n + 1)}}
+        self.routes[f"/league/{CURRENT_ID}/drafts"] = [draft]
+        self.routes[f"/draft/{draft_id}"] = draft
+        self.routes[f"/draft/{draft_id}/picks"] = picks
+        self.routes[f"/draft/{draft_id}/traded_picks"] = traded
+        self.routes[f"/league/{CURRENT_ID}/traded_picks"] = [
+            {"season": "2027", "round": 3, "roster_id": 10, "owner_id": 3, "previous_owner_id": 10}]
+        self.routes[f"/league/{PREVIOUS_ID}/drafts"] = []
 
     def _set_lineup(self, roster: list[str], week: int, skill: float) -> list[str]:
         # Managers rank players by a noisy projection; weaker managers are noisier.
@@ -123,6 +213,7 @@ class DemoLeague:
 
     def _build_season(self, league_id, season, prev_id, completed, median, shift):
         rng, n = self.rng, 12
+        self._season = season
         rosters = self._draft(n)
         skill = [rng.uniform(0.15, 0.6) for _ in range(n)]
         sched = _schedule(n, 14, shift)
@@ -134,6 +225,23 @@ class DemoLeague:
         txid = 1
         for week in range(1, 19):
             txs = []
+            if week == 1 and season == "2026":
+                # Offseason: roster 1's 2026 1st goes to roster 4, then on to roster 7.
+                p4 = rosters[3][-1]
+                txs.append({"transaction_id": f"{league_id[-3:]}{txid}", "type": "trade", "status": "complete",
+                            "roster_ids": [1, 4], "adds": {p4: 1}, "drops": {p4: 4}, "leg": 1, "settings": None,
+                            "draft_picks": [{"season": "2026", "round": 1, "roster_id": 1, "owner_id": 4,
+                                             "previous_owner_id": 1}],
+                            "waiver_budget": [{"sender": 1, "receiver": 4, "amount": 15}],
+                            "created": _ts(season, 0), "status_updated": _ts(season, 0)})
+                txs.append({"transaction_id": f"{league_id[-3:]}{txid + 1}", "type": "trade", "status": "complete",
+                            "roster_ids": [4, 7], "adds": {}, "drops": {}, "leg": 1, "settings": None,
+                            "draft_picks": [{"season": "2026", "round": 1, "roster_id": 1, "owner_id": 7,
+                                             "previous_owner_id": 4},
+                                            {"season": "2026", "round": 2, "roster_id": 7, "owner_id": 4,
+                                             "previous_owner_id": 7}],
+                            "waiver_budget": [], "created": _ts(season, 0, 3), "status_updated": _ts(season, 0, 3)})
+                txid += 2
             if 2 <= week <= completed + 1 and week <= 15:
                 # Waivers: a few teams swap their worst bench player for a free agent.
                 for t in rng.sample(range(n), 3):
@@ -149,7 +257,8 @@ class DemoLeague:
                     free_agents.append(drop)
                     txs.append({"transaction_id": f"{league_id[-3:]}{txid}", "type": "waiver", "status": "complete",
                                 "roster_ids": [t + 1], "adds": {fa: t + 1}, "drops": {drop: t + 1}, "leg": week,
-                                "settings": {"waiver_bid": rng.randint(0, 30)}, "draft_picks": [], "creator": users[t]["user_id"]})
+                                "settings": {"waiver_bid": rng.randint(0, 30)}, "draft_picks": [], "creator": users[t]["user_id"],
+                                "status_updated": _ts(season, week)})
                     txid += 1
                 if week == 5:
                     a, b = 2, 9
@@ -160,8 +269,9 @@ class DemoLeague:
                     txs.append({"transaction_id": f"{league_id[-3:]}{txid}", "type": "trade", "status": "complete",
                                 "roster_ids": [a + 1, b + 1], "adds": {pb: a + 1, pa: b + 1},
                                 "drops": {pa: a + 1, pb: b + 1}, "leg": week, "draft_picks": [
-                                    {"season": "2027", "round": 3, "roster_id": b + 1, "owner_id": a + 1, "previous_owner_id": b + 1}],
-                                "settings": None})
+                                    {"season": "2027", "round": 3, "roster_id": b + 1, "owner_id": a + 1, "previous_owner_id": b + 1}
+                                ] if season == "2026" else [],
+                                "settings": None, "status_updated": _ts(season, week, 1)})
                     txid += 1
             self.routes[f"/league/{league_id}/transactions/{week}"] = txs
 
@@ -185,11 +295,12 @@ class DemoLeague:
 
         self.routes[f"/league/{league_id}"] = {
             "league_id": league_id, "name": "Demo League (sample data)", "season": season, "sport": "nfl",
+            "scoring_settings": {},  # demo stats carry PPR totals
             "status": "complete" if completed >= 17 else "in_season", "previous_league_id": prev_id,
             "avatar": None, "total_rosters": n, "roster_positions": ROSTER_POSITIONS,
             "settings": {"playoff_week_start": 15, "playoff_teams": 6, "num_teams": n, "start_week": 1,
                          "league_average_match": 1 if median else 0, "playoff_round_type": 0,
-                         "playoff_seed_type": 0, "divisions": 0},
+                         "playoff_seed_type": 0, "divisions": 0, "draft_rounds": 3, "type": 2},
         }
         self.routes[f"/league/{league_id}/users"] = users
         self.routes[f"/league/{league_id}/rosters"] = [

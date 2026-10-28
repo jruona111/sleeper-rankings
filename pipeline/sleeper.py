@@ -5,6 +5,8 @@ Caching policy
 - League/users/rosters of a finished season -> cached forever; otherwise 1 hour.
 - /players/nfl (~5 MB) -> refreshed at most once per day.
 - /state/nfl -> 10 minutes.
+- Weekly player stats (/stats/nfl/regular/...) for finished weeks -> forever.
+- Drafts, draft picks and draft traded picks of a completed draft -> forever.
 
 The same SQLite file also stores computed history (weekly rankings, blurbs).
 """
@@ -129,14 +131,16 @@ class SleeperClient:
         self.transport = transport
         self.fetches = 0
 
-    def _get(self, path: str, max_age: float | None = None, permanent: bool = False) -> Any:
+    def _get(self, path: str, max_age: float | None = None, permanent: bool = False,
+             keep_empty: bool = False) -> Any:
         hit, value = self.cache.get(path, max_age)
         if hit:
             return value
         value = self.transport(path)
         self.fetches += 1
-        # Never cache an empty response permanently: it may just not exist yet.
-        self.cache.put(path, value, permanent=permanent and bool(value))
+        # Never cache an empty response permanently unless the caller knows it is final
+        # (e.g. a week of a finished season with no transactions): it may just not exist yet.
+        self.cache.put(path, value, permanent=permanent and (bool(value) or (keep_empty and value is not None)))
         return value
 
     def state(self) -> dict:
@@ -168,5 +172,36 @@ class SleeperClient:
     def matchups(self, league_id: str, week: int, completed: bool) -> list[dict]:
         return self._get(f"/league/{league_id}/matchups/{week}", max_age=HOUR, permanent=completed) or []
 
-    def transactions(self, league_id: str, week: int, completed: bool) -> list[dict]:
-        return self._get(f"/league/{league_id}/transactions/{week}", max_age=HOUR, permanent=completed) or []
+    def transactions(self, league_id: str, week: int, completed: bool, final: bool = False) -> list[dict]:
+        return self._get(f"/league/{league_id}/transactions/{week}", max_age=HOUR, permanent=completed,
+                         keep_empty=final) or []
+
+    def traded_picks(self, league: dict) -> list[dict]:
+        """Current owners of traded future draft picks."""
+        return self._season_scoped(league, "traded_picks") or []
+
+    def drafts(self, league: dict) -> list[dict]:
+        return self._season_scoped(league, "drafts") or []
+
+    def _draft_scoped(self, draft: dict, suffix: str) -> Any:
+        done = draft.get("status") == "complete"
+        return self._get(f"/draft/{draft['draft_id']}{suffix}", max_age=HOUR, permanent=done, keep_empty=done)
+
+    def draft(self, draft: dict) -> dict:
+        """Full draft object (adds slot_to_roster_id)."""
+        return self._draft_scoped(draft, "") or draft
+
+    def draft_picks(self, draft: dict) -> list[dict]:
+        return self._draft_scoped(draft, "/picks") or []
+
+    def draft_traded_picks(self, draft: dict) -> list[dict]:
+        return self._draft_scoped(draft, "/traded_picks") or []
+
+    def stats(self, season: str, week: int, completed: bool) -> dict | None:
+        """Weekly player stats (unofficial endpoint). None if it fails."""
+        try:
+            data = self._get(f"/stats/nfl/regular/{season}/{week}", max_age=6 * HOUR, permanent=completed)
+        except RuntimeError as err:
+            print(f"  ! stats {season} week {week} unavailable: {err}")
+            return None
+        return data if isinstance(data, dict) else None

@@ -1,11 +1,13 @@
 /* Power rankings front end. Reads JSON from data/ and renders hash routes:
  *   #/rankings[/week]  #/odds  #/awards[/week]  #/stats[/week]  #/team/<roster_id>
+ *   #/future[/<year>|/dynasty]  #/future/team/<roster_id>  #/trades[/<transaction_id>]
  */
 (() => {
   "use strict";
 
   const app = document.getElementById("app");
-  const store = { weeks: {}, sort: { key: "rank", dir: 1 }, highlight: null };
+  const store = { weeks: {}, sort: { key: "rank", dir: 1 }, highlight: null, futureView: "dynasty",
+    tradeFilter: { team: "", season: "" } };
   let charts = [];
 
   // -- helpers --------------------------------------------------------------
@@ -16,6 +18,8 @@
   const signed = (n, d = 1) => (n == null ? "–" : `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(d)}`);
   const record = (m) => `${m.wins}-${m.losses}${m.ties ? `-${m.ties}` : ""}`;
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const ordinal = (n) => `${n}${["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) || n % 10 > 3 ? 0 : n % 10]}`;
+  const day = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
   async function getJSON(path) {
     const res = await fetch(`data/${path}`, { cache: "no-cache" });
@@ -125,14 +129,14 @@
           <div class="score num"><b>${fmt(r.score, 1)}</b><span>score</span></div>
         </div>
         <div class="meter" aria-hidden="true"><i style="width:${Math.max(2, r.score)}%"></i></div>
-        <p class="blurb">${esc(r.blurb)}</p>
+        ${r.blurb ? `<p class="blurb">${esc(r.blurb)}</p>` : ""}
       </a></li>`;
     }).join("");
 
     app.innerHTML = `
       <div class="view-head">
         <div><h1>Week ${week} Power Rankings</h1>
-          <div class="sub">Score 0–100 · tap a team for details</div></div>
+          <div class="sub">Score 0–100 · tap a team for details${data.backfilled ? " · backfilled week, no write-ups" : ""}</div></div>
         ${weekSelect(meta.weeks, week, "rankings")}
       </div>
       <ol class="cards">${cards}</ol>
@@ -284,7 +288,7 @@
           <div class="team-meta">${esc(t.owner_name)}${s ? ` · ${record(s)}` : ""}
             ${row ? ` · <span class="pill ${row.change > 0 ? "up" : row.change < 0 ? "down" : ""}">#${row.rank}${row.prev_rank != null && row.change ? ` ${row.change > 0 ? "▲" : "▼"}${Math.abs(row.change)}` : ""}</span>` : ""}</div></div>
       </div>
-      ${row ? `<p class="blurb" style="margin:0 0 14px">${esc(row.blurb)}</p>` : ""}
+      ${row?.blurb ? `<p class="blurb" style="margin:0 0 14px">${esc(row.blurb)}</p>` : ""}
       <div class="tiles">${tiles}</div>
       <h2>Season</h2>
       <div class="grid-2">
@@ -383,8 +387,8 @@
       <section class="panel"><h3>Week ${t.week} trade</h3>
         <p class="sub">Points scored in starting lineups since the trade.${t.margin ? ` Edge: ${esc(team(t.leader).team_name)} by ${fmt(t.margin)}.` : ""}</p>
         <ul class="list">${t.sides.map((s) => `
-          <li><span class="left">${avatar(s.roster_id)}<span><b>${esc(team(s.roster_id).team_name)}</b> got<br>
-            <span class="team-meta">${esc([...s.received.map((r) => r.player), ...s.picks].join(", ") || "nothing")}</span></span></span>
+          <li><span class="left">${avatar(s.roster_id)}<span class="wrap"><b>${esc(team(s.roster_id).team_name)}</b> got<br>
+            <span class="team-meta wrap">${esc([...s.received.map((r) => r.player), ...s.picks].join(", ") || "nothing")}</span></span></span>
             <span class="num"><b>${fmt(s.started_points)}</b></span></li>`).join("")}</ul></section>`).join("")
       || `<section class="panel"><p class="sub" style="margin:0">No trades yet. Cowards.</p></section>`;
     app.innerHTML = `
@@ -394,8 +398,149 @@
       <h2>Best waiver pickups</h2>
       <p class="note" style="margin:-4px 0 10px">Points scored while on the team that added them.</p>
       <section class="panel"><ul class="list">${pickups}</ul></section>
-      <h2>Trades</h2>${trades}`;
+      <h2>Trades</h2>
+      <p class="note" style="margin:-4px 0 10px">This season's trades. <a class="link" href="#/trades">Full trade history and pick outcomes ›</a></p>
+      ${trades}`;
     bindWeekSelect();
+  }
+
+
+  // -- future rankings ---------------------------------------------------------
+  const playerTag = (p) => `${esc(p.name)} <span class="team-meta">${esc(p.pos || "")}${p.age != null ? ` ${p.age}` : ""}</span>`;
+  const pickLabel = (p) => `${p.season} ${ordinal(p.round)}`;
+
+  async function viewFuture(arg) {
+    const fut = await load("future", "future.json");
+    if (!fut.teams.length) { app.innerHTML = `<p class="empty">Future rankings aren't available yet.</p>`; return; }
+    const views = [...fut.years.map(String), "dynasty"];
+    const view = views.includes(arg) ? arg : (views.includes(store.futureView) ? store.futureView : "dynasty");
+    store.futureView = view;
+    const rows = fut.teams.slice().sort((a, b) => a.views[view].rank - b.views[view].rank);
+    const top = Math.max(...rows.map((t) => t.views[view].score));
+    const low = Math.min(...rows.map((t) => t.views[view].score));
+    const weights = fut.year_weights.map((w, i) => `${fut.years[i]} ${Math.round(w * 100)}%`).join(" · ");
+    const cards = rows.map((t) => {
+      const v = t.views[view];
+      const change = t.power_rank != null ? t.power_rank - v.rank : null;
+      const firsts = t.picks.filter((p) => p.round === 1).length;
+      const aging = v.aging.length ? `<p class="flag warn">⚠ Aging core: ${v.aging.map((p) => `${esc(p.name)} (${esc(p.pos)}, ${p.age})`).join(", ")}</p>` : "";
+      const rising = t.rising.length ? `<p class="flag rise">↗ Rising: ${t.rising.slice(0, 3).map((p) => `${esc(p.name)} (${esc(p.pos)}, ${p.age ?? "?"})`).join(", ")}${t.rising.length > 3 ? ` +${t.rising.length - 3}` : ""}</p>` : "";
+      return `<li><a class="card" href="#/future/team/${t.roster_id}">
+        <div class="card-top">
+          <div><div class="rank num">${v.rank}</div>${change == null ? "" : moveBadge(change, t.power_rank)}</div>
+          ${avatar(t.roster_id)}
+          <div style="min-width:0"><div class="team-name">${esc(team(t.roster_id).team_name)}</div>
+            <div class="team-meta num">Power #${t.power_rank ?? "–"} now · ${firsts} future 1st${firsts === 1 ? "" : "s"}</div></div>
+          <div class="score num"><b>${fmt(v.score, 1)}</b><span>proj. pts/wk</span></div>
+        </div>
+        <div class="meter" aria-hidden="true"><i style="width:${Math.max(4, top > low ? 30 + 70 * (v.score - low) / (top - low) : 100)}%"></i></div>
+        <ol class="contrib">${v.top.map((p) => `<li><span>${playerTag(p)}</span><span class="num">${fmt(p.points, 1)}</span></li>`).join("")}</ol>
+        ${aging}${rising}
+      </a></li>`;
+    }).join("");
+    app.innerHTML = `
+      <div class="view-head"><div><h1>Future Rankings</h1>
+        <div class="sub">${view === "dynasty" ? `Dynasty score: ${esc(weights)}` : `Projected ${view} starting lineup`} · ▲▼ vs. current power rank</div></div></div>
+      <nav class="seg" aria-label="Projection year">${views.map((v) =>
+        `<a href="#/future/${v}" ${v === view ? `aria-current="page"` : ""}>${v === "dynasty" ? "Dynasty" : v}</a>`).join("")}</nav>
+      <ol class="cards">${cards}</ol>
+      <h2>How projections work</h2>
+      <section class="panel"><p class="sub" style="margin:0">Each player's baseline is his recent points per game under this league's scoring (recent games count more, last season included), pulled toward a fringe starter's level when the sample is small. For players ${fut.young_age} or younger (or ${fut.young_years_exp} or fewer NFL seasons) it blends in snap share and targets/carries. Age curves then raise or lower it each year (RBs fade first, QBs last), and depth-chart situations add a nudge: backing up an aging or injured starter or gaining snaps helps, sitting behind a young starter or losing snaps hurts. A team's score is its best projected starting lineup plus a small bonus for each future draft pick it owns (1st ${fmt(fut.pick_values["1"] ?? 0, 1)}, 2nd ${fmt(fut.pick_values["2"] ?? 0, 1)}, 3rd ${fmt(fut.pick_values["3"] ?? 0, 1)} pts/wk).</p></section>`;
+  }
+
+  async function viewFutureTeam(rid) {
+    const fut = await load("future", "future.json");
+    const t = fut.teams.find((x) => x.roster_id === Number(rid));
+    if (!t) { app.innerHTML = `<p class="empty">Team not found. <a href="#/future">Back to Future Rankings</a></p>`; return; }
+    const views = [...fut.years.map(String), "dynasty"];
+    const tiles = views.map((v) => {
+      const x = t.views[v];
+      return `<div class="tile"><div class="label">${v === "dynasty" ? "Dynasty" : v}</div><div class="value num">#${x.rank}</div>
+        <div class="hint num">${fmt(x.score, 1)} pts/wk${x.picks_pts ? ` · picks +${fmt(x.picks_pts, 1)}` : ""}</div></div>`;
+    }).join("");
+    const head = fut.years.map((y) => `<th>${y}</th>`).join("");
+    const body = t.players.map((p) => `<tr>
+      <td class="l sticky"><span class="pname">${esc(p.name)}</span>
+        <span class="team-meta">${esc(p.pos || "")}${p.age != null ? ` · ${p.age}` : ""}${p.nfl_team ? ` · ${esc(p.nfl_team)}` : ""}${p.young ? ` · <b class="young">young</b>` : ""}</span></td>
+      ${p.proj.map((v, i) => `<td class="num${p.starter[i] ? " starter" : ""}">${fmt(v, 1)}</td>`).join("")}
+      <td class="num">${p.games ? fmt(p.ppg, 1) : "–"}</td>
+      <td class="l note-cell">${esc(p.reasons.join("; "))}</td></tr>`).join("");
+    const picks = t.picks.length ? t.picks.map((p) => `<li><span>${pickLabel(p)}${p.original !== t.roster_id ? ` <span class="team-meta">from ${esc(team(p.original).team_name)}</span>` : ""}</span>
+      <span class="num">+${fmt(fut.pick_values[String(p.round)] ?? 0, 1)}</span></li>`).join("") : `<li>No future picks.</li>`;
+    app.innerHTML = `
+      <a class="back" href="#/future">‹ Future Rankings</a>
+      <div class="team-hero">${avatar(t.roster_id, "lg")}
+        <div style="min-width:0"><h1>${esc(team(t.roster_id).team_name)}</h1>
+          <div class="team-meta">Power #${t.power_rank ?? "–"} now · <a class="link" href="#/team/${t.roster_id}">Season stats ›</a></div></div></div>
+      <div class="tiles">${tiles}</div>
+      <h2>Player projections</h2>
+      <p class="note" style="margin:-4px 0 10px">Projected points per game by season. <b>Bold</b> = in that year's best lineup. Last col: recent PPG.</p>
+      <div class="table-wrap"><table><thead><tr><th class="l sticky">Player</th>${head}<th>Now</th><th class="l">Outlook</th></tr></thead>
+        <tbody>${body}</tbody></table></div>
+      <p class="scroll-hint">Swipe the table sideways for more columns.</p>
+      <h2>Future draft picks</h2>
+      <section class="panel"><ul class="list">${picks}</ul></section>`;
+  }
+
+  // -- trades --------------------------------------------------------------------
+  function pickOutcome(p) {
+    const lines = p.later.map((e) => `<li class="chain"><a href="#/trades/${esc(e.transaction_id)}">↳ Traded to ${esc(team(e.to).team_name)} on ${day(e.time)}</a></li>`);
+    const o = p.outcome;
+    const end = o.status === "made" ? `(${esc(o.player)})`
+      : o.status === "unused" ? "(Pick not used)" : "(Pick not yet made)";
+    lines.push(`<li class="chain result${o.status === "made" ? "" : " pending"}">${end}</li>`);
+    return `<ul class="chain-list">${lines.join("")}</ul>`;
+  }
+
+  function tradeCard(t) {
+    const names = t.sides.map((s) => esc(team(s.roster_id).team_name)).join(" ⇄ ");
+    const sides = t.sides.map((s) => {
+      const items = [
+        ...s.players.map((p) => `<li class="asset">${esc(p.name)} <span class="team-meta">${esc(p.pos || "")}</span></li>`),
+        ...s.picks.map((p) => `<li class="asset">${pickLabel(p)} <span class="team-meta">(from ${esc(team(p.original).team_name)})</span>${pickOutcome(p)}</li>`),
+        ...(s.faab ? [`<li class="asset">$${s.faab} FAAB</li>`] : []),
+      ];
+      return `<div class="trade-side"><div class="trade-team">${avatar(s.roster_id)}<span><b>${esc(team(s.roster_id).team_name)}</b> received</span></div>
+        <ul class="assets">${items.join("") || `<li class="asset team-meta">Nothing</li>`}</ul></div>`;
+    }).join("");
+    return `<section class="panel trade" id="trade-${esc(t.transaction_id)}">
+      <div class="trade-head"><span class="team-meta num">${day(t.time)} · ${esc(t.season)} season${t.week > 1 ? ` · week ${t.week}` : ""}</span></div>
+      <h3>${names}</h3>${sides}</section>`;
+  }
+
+  async function viewTrades(tid) {
+    const data = await load("trades", "trades.json");
+    if (!data.trades.length) { app.innerHTML = `<p class="empty">No trades yet. Cowards.</p>`; return false; }
+    const f = store.tradeFilter;
+    const target = tid ? data.trades.find((t) => t.transaction_id === tid) : null;
+    const visible = (t) => (!f.team || t.roster_ids.includes(Number(f.team))) && (!f.season || t.season === f.season);
+    if (target && !visible(target)) { f.team = ""; f.season = ""; }
+    const shown = data.trades.filter(visible);
+    const teamIds = Object.keys(store.meta.teams).sort((a, b) => team(a).team_name.localeCompare(team(b).team_name));
+    app.innerHTML = `
+      <div class="view-head"><div><h1>Trades</h1>
+        <div class="sub">${shown.length} of ${data.trades.length} trades · newest first · what every pick became</div></div></div>
+      <div class="filters">
+        <select class="select" id="trade-team" aria-label="Team"><option value="">All teams</option>${teamIds.map((rid) =>
+          `<option value="${rid}" ${String(f.team) === rid ? "selected" : ""}>${esc(team(rid).team_name)}</option>`).join("")}</select>
+        <select class="select" id="trade-season" aria-label="Season"><option value="">All seasons</option>${data.seasons.map((s) =>
+          `<option value="${esc(s)}" ${f.season === s ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
+      </div>
+      <div class="trades">${shown.map(tradeCard).join("") || `<p class="empty">No trades match.</p>`}</div>`;
+    const onFilter = () => {
+      store.tradeFilter = { team: document.getElementById("trade-team").value, season: document.getElementById("trade-season").value };
+      if (location.hash !== "#/trades") history.replaceState(null, "", "#/trades");
+      viewTrades();
+    };
+    document.getElementById("trade-team").addEventListener("change", onFilter);
+    document.getElementById("trade-season").addEventListener("change", onFilter);
+    const el = tid && document.getElementById(`trade-${tid}`);
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      el.classList.add("flash");
+      return true; // keep this scroll position
+    }
+    return false;
   }
 
   const STAT_COLS = [
@@ -470,12 +615,18 @@
 
   // -- router ----------------------------------------------------------------
   async function route() {
-    const [name = "rankings", arg] = location.hash.replace(/^#\/?/, "").split("/");
+    const [name = "rankings", arg, arg2] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
     const tab = name === "team" ? "rankings" : name;
-    document.querySelectorAll(".tabs a").forEach((a) => { if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+    document.querySelectorAll(".tabs a").forEach((a) => {
+      if (a.dataset.tab === tab) { a.setAttribute("aria-current", "page"); a.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+      else a.removeAttribute("aria-current");
+    });
     destroyCharts();
     try {
       if (name === "team") await viewTeam(arg);
+      else if (name === "future" && arg === "team") await viewFutureTeam(arg2);
+      else if (name === "future") await viewFuture(arg);
+      else if (name === "trades") return await viewTrades(arg);
       else if (name === "odds") await viewOdds();
       else if (name === "awards") await viewAwards(arg);
       else if (name === "stats") await viewStats(arg);
@@ -519,7 +670,7 @@
     document.getElementById("foot-text").textContent =
       `${meta.league.season} season · ranked through week ${meta.latest_week || 0} · ` +
       `${meta.blurb_source === "anthropic" ? "write-ups by Claude" : "template write-ups"} · data from the Sleeper API · last updated ${updated.toLocaleString()}`;
-    window.addEventListener("hashchange", () => { route().then(() => window.scrollTo(0, 0)); });
+    window.addEventListener("hashchange", () => { route().then((keep) => { if (!keep) window.scrollTo(0, 0); }); });
     route();
   }
 

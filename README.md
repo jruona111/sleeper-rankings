@@ -2,7 +2,7 @@
 
 A phone-friendly power rankings website for a Sleeper fantasy football league. It updates itself every Tuesday and is hosted free on GitHub Pages.
 
-**What it shows:** weekly power rankings with a short, fun write-up for each team; team pages with charts; playoff odds; weekly awards; best waiver pickups and trade results; a sortable stats table; all-time records and head-to-head.
+**What it shows:** weekly power rankings with a short, fun write-up for each team; team pages with charts; playoff odds; weekly awards; best waiver pickups; a **Trades** tab with every trade in league history and what each traded draft pick turned into; a **Future** tab ranking each team's projected strength for the next three seasons (dynasty outlook); a sortable stats table; all-time records and head-to-head.
 
 The repo ships with **sample data** from a made-up league, so you can see the site before you set it up.
 
@@ -87,6 +87,7 @@ Everything adjustable lives in `config.yaml`:
 | `simulations` | Number of playoff simulations (default 10,000) |
 | `history_seasons` | How many past seasons to include in all-time records |
 | `blurbs.model` / `blurbs.effort` | Which Claude model writes the blurbs, and how much effort it spends |
+| `dynasty` | The Future tab's model: year weights for the Dynasty score (default 50/30/20), age curves by position, the young-player blend, depth-chart adjustments, and draft-pick values. Each setting is commented in the file. |
 
 Not sure about your weights? The **Full Stats** tab has a "Do the rankings work?" section showing how often each weighting correctly predicted the next week's winners.
 
@@ -117,6 +118,16 @@ python -m http.server 8000 --directory site
 ```
 
 Then open http://localhost:8000. Use `python -m pipeline --demo` to regenerate the sample league instead.
+
+### Adding past weeks without write-ups
+
+If you set the site up mid-season, rank the earlier weeks without generating write-ups for them:
+
+```bash
+python -m pipeline backfill --from 1 --to 7
+```
+
+Those weeks get rankings and appear in the charts and the week picker, just without blurbs. It's safe to run again, and later runs (including the weekly GitHub Action) remember which weeks were backfilled.
 
 ## Troubleshooting
 
