@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Power Rankings</title>
+  <meta name="description" content="Weekly fantasy football power rankings for our Sleeper league.">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Rankings">
+  <link rel="stylesheet" href="css/style.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try { var t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-row">
+      <a href="#/rankings" class="brand" id="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 20V11M10 20V5M16 20v-6M22 20H2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-name" id="league-name">Power Rankings</span>
+          <span class="brand-sub" id="updated">Loading…</span>
+        </span>
+      </a>
+      <button class="icon-btn" id="theme-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/rankings" data-tab="rankings">Rankings</a>
+      <a href="#/odds" data-tab="odds">Playoff Odds</a>
+      <a href="#/awards" data-tab="awards">Awards</a>
+      <a href="#/stats" data-tab="stats">Full Stats</a>
+    </nav>
+  </header>
+
+  <div class="demo-banner" id="demo-banner" hidden>
+    Sample data. Set your league ID in <code>config.yaml</code> to see your league.
+  </div>
+
+  <main id="app" tabindex="-1">
+    <p class="loading">Loading rankings…</p>
+  </main>
+
+  <footer class="foot">
+    <span id="foot-text">Data from the Sleeper API.</span>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

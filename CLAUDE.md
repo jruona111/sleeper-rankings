@@ -1,0 +1,135 @@
+# CLAUDE.md
+
+Sleeper fantasy football power rankings: a Python pipeline writes JSON; a static, no-build front end reads it; GitHub Actions runs it weekly and deploys to GitHub Pages.
+
+## Layout
+
+```
+config.yaml                 league_id, ranking weights, decay, simulations, blurb model
+requirements.txt
+pipeline/
+  run.py                    entry point (python -m pipeline); orchestrates everything, writes site/data/*
+  config.py                 loads config.yaml (LEAGUE_ID env var overrides league_id)
+  sleeper.py                Sleeper API v1 client + SQLite cache (pipeline/cache.db, gitignored)
+  league.py                 Season/Team model; completed-week logic; schedule; previous_league_id chain
+  lineup.py                 optimal lineup (Hungarian algorithm) -> Max PF; biggest lineup mistake
+  metrics.py                TeamWeek per team-week; season-to-date metrics; remaining SOS
+  rankings.py               z-scores -> weighted composite -> 0-100 score; rank change + "driver" metric
+  playoffs.py               Monte Carlo playoff/bye/#1 seed/title odds
+  extras.py                 weekly awards, transaction notes, all-time records + head-to-head
+  storylines.py             per-team "facts" object for each week's blurb
+  blurbs.py                 Claude blurbs (structured JSON output) with template fallback; cached by facts hash
+  backtest.py               week-N ranks predicting week-N+1 winners; python -m pipeline.backtest
+  demo.py                   synthetic two-season league in Sleeper API shapes (--demo)
+  tests/                    pytest: lineup optimizer, metrics, end-to-end demo build
+site/
+  index.html, css/style.css, js/app.js   vanilla JS SPA with hash routes; Chart.js 4.4.1 from cdnjs
+  manifest.webmanifest, icons/           Add to Home Screen
+  data/                     generated JSON (committed by the workflow)
+.github/workflows/update.yml   Tue 15:00 UTC cron + manual + push; test, run, commit data, deploy Pages
+.claude/launch.json         local static server for previews (port 8765)
+```
+
+## Commands
+
+```bash
+pip install -r requirements.txt
+python -m pytest -q pipeline/tests          # unit + end-to-end tests (no network)
+python -m pipeline                          # real league (config.yaml / LEAGUE_ID), writes site/data
+python -m pipeline --demo                   # synthetic league, no network, in-memory cache
+python -m pipeline --no-llm                 # force template blurbs
+python -m pipeline --out /tmp/data          # write JSON elsewhere
+python -m pipeline.backtest [--demo]        # print weight-set accuracy table
+python -m http.server 8765 --directory site # view the site
+```
+
+`ANTHROPIC_API_KEY` enables Claude blurbs. Without it (or on any API error) blurbs fall back to templates; the build never fails because of blurbs.
+
+## Data rules and conventions
+
+- **Completed weeks**: current season -> `state.week - 1` during the regular season (Sleeper bumps `week` by Tuesday); finished seasons -> through the final playoff week. Weeks with no points are dropped; `settings.start_week` is respected.
+- **Caching** (`sleeper.py`): completed weeks' matchups/transactions are cached forever, except the most recent completed week (1-hour TTL so stat corrections land next run). Finished-season league/users/rosters cached forever. `/players/nfl` refreshed at most daily. `/state/nfl` 10 min.
+- **Max PF**: exact max-weight assignment of rostered players (`matchup.players`) to starting slots from `roster_positions` (BN/IR/TAXI/RES ignored). Eligibility: FLEX=RB/WR/TE, WRRB_FLEX=WR/RB, REC_FLEX=WR/TE, SUPER_FLEX=QB/RB/WR/TE, IDP_FLEX=DL/LB/DB. Player positions = `fantasy_positions` ∪ `position`; alphabetic IDs are team defenses. A slot may stay empty rather than start a negative scorer. Max PF is floored at actual PF.
+- **Records/win %/all-play/luck**: regular season only. Median leagues (`league_average_match`) add a W/L vs. the weekly median. Ties = half win. Byes (null `matchup_id`) give no H2H result.
+- **Luck** = (wins + ties/2) − expected wins, where an H2H game's expectation is the week's all-play win fraction and a median game's expectation is its actual result.
+- **PF-based metrics** (PF, Max PF, efficiency, form, consistency) include playoff weeks.
+- **Recent form** = Σ PF·decay^weeks_ago / Σ decay^weeks_ago.
+- **Power score**: per-metric z-score (population SD) across teams, weighted sum / Σ|weights| = composite; score = 100·Φ(composite / SD(composite)). Ties broken by PF. All weeks are recomputed each run (changing weights re-scores history) and saved to `rankings_history` in cache.db.
+- **Driver**: metric whose weighted contribution changed most vs. last week, in the direction the team moved.
+- **Playoff sim**: Normal(mean, sd) per team, both shrunk toward league values with 2 pseudo-games. Remaining schedule from Sleeper's future-week matchups (round-robin fallback). Seeding: division winners first (if divisions), then wins, then PF. Bracket: byes to top seeds, fixed seeding unless `playoff_seed_type == 1`. Once in the playoffs, the real `winners_bracket` is simulated forward.
+- **Blurbs**: one Claude call per week (all uncached teams) with JSON-schema output, `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). Cache key = sha256(facts + model + PROMPT_VERSION); bump `PROMPT_VERSION` in blurbs.py to regenerate.
+- **Owner identity across seasons** = Sleeper `owner_id`; orphan rosters fall back to `"<season>:<roster_id>"`.
+
+## JSON schemas (site/data)
+
+All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale) unless noted. Roster IDs are ints in values, strings as object keys.
+
+### meta.json
+```jsonc
+{
+  "generated_at": "2026-10-27T15:02:11+00:00",
+  "demo": false,
+  "league": { "league_id": "…", "name": "…", "season": "2026", "avatar": "url|null", "status": "in_season",
+              "num_teams": 12, "playoff_teams": 6, "playoff_week_start": 15, "median_scoring": false,
+              "roster_positions": ["QB", "RB", "…"] },
+  "nfl_state": { "season": "2026", "week": 9, "season_type": "regular" },
+  "weeks": [1, 2, 3],               // ranked (completed) weeks
+  "latest_week": 3,                 // 0 before week 1 is complete
+  "teams": { "<roster_id>": Team },
+  "weights": { "pf": 0.3, "max_pf": 0.25, "win_pct": 0.25, "efficiency": 0.15, "recent_form": 0.05 },
+  "decay": 0.85,
+  "metric_labels": { "pf": "points per game", "…": "…" },
+  "blurb_source": "anthropic" | "template"
+}
+// Team = { roster_id, owner_id, team_name, owner_name, avatar: url|null, division: int|null }
+```
+
+### rankings/week-N.json
+```jsonc
+{ "week": 8, "rankings": [ {
+    "rank": 1, "prev_rank": 2 | null, "change": 1,      // positive = moved up
+    "roster_id": 4, "score": 92.9, "composite": 1.21,
+    "z": { "pf": 1.4, "…": 0 },
+    "driver": { "metric": "win_pct", "label": "win percentage", "delta": 0.08, "z_before": 0.5, "z_after": 0.9 } | null,
+    "metrics": SeasonMetrics,   // season-to-date through week N
+    "week": TeamWeek | null,    // this week's game
+    "blurb": "…", "blurb_source": "anthropic" | "template",
+    "facts": { … }              // storyline facts given to the blurb writer
+} ] }
+```
+`SeasonMetrics`: `games, wins, losses, ties, win_pct, pf (per game), pf_total, pa (per game), pa_total, max_pf (per game), max_pf_total, efficiency, recent_form, consistency (SD), allplay_w, allplay_l, allplay_t, allplay_pct, expected_wins, luck, sos (opponents' PPG), bench_total, bench_pg, high, low, streak ("W3"), last3 [pts], worst_mistake: Mistake|null`.
+
+`TeamWeek`: `week, pf, max_pf, bench_pts, efficiency, opponent (roster_id|null), pa|null, result ("W"|"L"|"T"|null), median_result|null, allplay [w,l,t], playoff (bool), mistake: Mistake|null`.
+
+`Mistake`: `slot, benched, benched_points, started (player_id|null), started_points, gain` (+ `benched_name, started_name, week` where shown).
+
+### teams.json
+`{ "<roster_id>": Team & { season: SeasonMetrics|null, remaining_sos: float|null, weekly: [TeamWeek & {rank, score}], schedule: [{week, opponent, pf?, pa?, result?, playoff?, future}], h2h: [{opponent, w, l, t, pf, pa, games: [{season, week, pf, pa, result, playoff}]}], alltime: AllTime|null } }`
+
+### playoffs.json
+```jsonc
+{ "status": "regular_season" | "playoffs" | "complete" | "preseason", "as_of_week": 8, "simulations": 10000,
+  "remaining_weeks": [9, 10], "playoff_teams": 6, "byes": 2, "median_games": false,
+  "teams": [ { "roster_id": 1, "playoff_pct": 94.1, "bye_pct": 60.2, "first_seed_pct": 35.3, "champ_pct": 26.9,
+               "proj_wins": 8.8, "avg_seed": 2.7, "seed_dist": [35.3, …],   // percents, 0-100
+               "mean": 147.0, "sd": 16.2, "record": [5, 3, 0] } ] }
+```
+
+### awards.json
+`{ "weeks": { "<week>": [ { key, title, roster_id, opponent?, value, detail } ] } }` — keys: `high_score, low_score, blowout, closest, unluckiest, best_manager, worst_mistake`.
+
+### transactions.json
+`{ "best_pickups": [{week, roster_id, player_id, player, type, faab, points, started_points, weeks}], "trades": [{week, transaction_id, leader, margin, sides: [{roster_id, received: [{player_id, player, points, started_points}], picks: ["2027 round 3"], started_points}]}] }` — points count only weeks the player was on that roster from the transaction week on.
+
+### history.json
+`{ "seasons": [{season, league_id, name, champion_owner, complete}], "alltime": [AllTime] }` where `AllTime = {owner_id, name, team_name, seasons: [..], wins, losses, ties, win_pct, pf, pa, playoff_wins, playoff_losses, championships}`. (Head-to-head lives per team in teams.json.)
+
+### backtest.json
+`{ "seasons": ["2026", "2025"], "results": [{ name, weights, correct, games, accuracy (0-1|null), by_season: [{season, correct, games, accuracy}] }] }` — first entry is always "Current weights".
+
+## Front end notes
+
+- Hash routes: `#/rankings[/week]`, `#/odds`, `#/awards[/week]`, `#/stats[/week]`, `#/team/<roster_id>`.
+- Colors are CSS tokens on `:root`; dark mode via `prefers-color-scheme` plus a `data-theme` override saved in localStorage. Charts read tokens at render time and re-render on theme change.
+- Designed at 380px first. Check new UI at phone width with no horizontal page scroll (only `.table-wrap` scrolls sideways).
+- All user-provided strings (team/player names) go through `esc()`.

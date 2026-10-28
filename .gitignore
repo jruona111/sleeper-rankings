@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# The API cache lives in the GitHub Actions cache, not in git.
+pipeline/cache.db
+pipeline/*.db-journal

@@ -1,0 +1,78 @@
+name: Update power rankings
+
+on:
+  schedule:
+    - cron: "0 15 * * 2" # Tuesdays 15:00 UTC, after Monday Night Football
+  workflow_dispatch: # "Run workflow" button on the Actions tab
+  push:
+    branches: [main]
+    paths: ["site/**", "pipeline/**", "config.yaml", ".github/workflows/update.yml", "!site/data/**"]
+
+permissions:
+  contents: write # commit the updated JSON
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update-rankings
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Sleeper API cache + ranking/blurb history. A fresh key each run saves the
+      # updated database; restore-keys picks up the most recent one.
+      - name: Restore API cache
+        uses: actions/cache@v4
+        with:
+          path: pipeline/cache.db
+          key: sleeper-cache-${{ github.run_id }}
+          restore-keys: sleeper-cache-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q pipeline/tests
+
+      - name: Run pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LEAGUE_ID: ${{ vars.LEAGUE_ID }} # optional; overrides config.yaml
+        run: python -m pipeline
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/data
+          if git diff --staged --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "Update power rankings data ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

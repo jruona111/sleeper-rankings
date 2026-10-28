@@ -1,0 +1,34 @@
+# Fantasy power rankings configuration.
+# The LEAGUE_ID environment variable overrides league_id when set.
+
+# Your Sleeper league ID: open the league in the Sleeper web app; it's the number
+# in the URL (https://sleeper.com/leagues/<LEAGUE_ID>/...).
+league_id: "1330718400535592960"
+
+# Power-score weights. They are applied to z-scores, so they don't have to sum
+# to 1, but keeping them as percentages makes them easy to reason about.
+weights:
+  pf: 0.30          # points for per game
+  max_pf: 0.25      # optimal-lineup points per game
+  win_pct: 0.25     # win percentage (median games included)
+  efficiency: 0.15  # PF / Max PF
+  recent_form: 0.05 # exponentially decayed PF
+
+# Recent form weight = decay ** weeks_ago
+decay: 0.85
+
+# Monte Carlo playoff simulation
+simulations: 10000
+random_seed: 42
+
+# How many seasons to follow back through previous_league_id for all-time
+# records and head-to-head (0 = current season only).
+history_seasons: 10
+
+# Movement write-ups (needs ANTHROPIC_API_KEY; otherwise template blurbs are used)
+blurbs:
+  model: claude-opus-5-5
+  effort: medium
+  # Generate AI blurbs for every week ("all") or only the latest week ("latest").
+  # Blurbs are cached, so "all" only costs extra on the first run.
+  weeks: all
