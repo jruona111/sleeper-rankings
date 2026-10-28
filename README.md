@@ -84,6 +84,7 @@ Everything adjustable lives in `config.yaml`:
 |---|---|
 | `weights` | How much each stat counts in the power score (defaults: PF 30%, Max PF 25%, Win % 25%, Efficiency 15%, Recent form 5%) |
 | `decay` | How fast older weeks fade from "recent form" (0.85 = last week counts 85% as much as this week) |
+| `pickup_weights` | How Best waiver pickups are ranked: share of all points scored on the team (default 70%) vs. points scored in the starting lineup (30%) |
 | `simulations` | Number of playoff simulations (default 10,000) |
 | `history_seasons` | How many past seasons to include in all-time records |
 | `blurbs.model` / `blurbs.effort` | Which Claude model writes the blurbs, and how much effort it spends |

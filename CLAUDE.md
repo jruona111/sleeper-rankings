@@ -163,7 +163,7 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
 `{ "weeks": { "<week>": [ { key, title, roster_id, opponent?, value, detail } ] } }` — keys: `high_score, low_score, blowout, closest, unluckiest, best_manager, worst_mistake`.
 
 ### transactions.json
-`{ "best_pickups": [{week, roster_id, player_id, player, type, faab, points, started_points, weeks}], "trades": [{week, transaction_id, leader, margin, sides: [{roster_id, received: [{player_id, player, points, started_points}], picks: ["2027 round 3"], started_points}]}] }` — points count only weeks the player was on that roster from the transaction week on.
+`{ "best_pickups": [{week, roster_id, player_id, player, type, faab, points, started_points, weeks, value}], "trades": [{week, transaction_id, leader, margin, sides: [{roster_id, received: [{player_id, player, points, started_points}], picks: ["2027 round 3"], started_points}]}] }` — points count only weeks the player was on that roster from the transaction week on. Best pickups are ranked by `value` = `pickup_weights.points` (0.7) × points + `pickup_weights.started` (0.3) × started_points.
 
 ### future.json
 ```jsonc
@@ -224,5 +224,6 @@ Top level also has `min_started_weeks`, `recent_par_weeks`, `replacement` and `w
 - Backfilled weeks (`blurb: null`) render without a blurb paragraph.
 - Look: "poster" style. Archivo (Google Fonts, variable width; condensed 75% for big numerals and headings), square corners, heavy ink rules instead of cards/shadows, boxed tabs, solid movement tags (`.move`). Rankings rows (`.prow`) show a 2-digit rank, rounded-square team picture, score, and a rank-by-week sparkline (`spark()`).
 - Colors are CSS tokens on `:root`; dark mode via `prefers-color-scheme` plus a `data-theme` override saved in localStorage. Charts read tokens at render time and re-render on theme change.
+- Cache busting: index.html links `css/style.css?v=dev` and `js/app.js?v=dev`; the workflow rewrites `dev` to the commit SHA before deploying, so phones (incl. home-screen apps) load new code after each deploy. Keep the `?v=dev` suffix when editing those tags.
 - Designed at 380px first. Check new UI at phone width with no horizontal page scroll (only `.table-wrap` scrolls sideways).
 - All user-provided strings (team/player names) go through `esc()`.

@@ -91,7 +91,17 @@ def _points_since(pid: str, rid: int, from_week: int, weeks: dict[int, dict[int,
     return round(total, 2), round(started, 2), n
 
 
-def transaction_notes(season: Season, weeks: dict[int, dict[int, TeamWeek]], players: dict) -> dict:
+PICKUP_WEIGHTS = {"points": 0.7, "started": 0.3}
+
+
+def pickup_value(points: float, started_points: float, weights: dict | None = None) -> float:
+    """Pickup score: a blend of all points while rostered and points in the starting lineup."""
+    w = {**PICKUP_WEIGHTS, **(weights or {})}
+    return round(float(w["points"]) * points + float(w["started"]) * started_points, 2)
+
+
+def transaction_notes(season: Season, weeks: dict[int, dict[int, TeamWeek]], players: dict,
+                      pickup_weights: dict | None = None) -> dict:
     pickups, trades = [], []
     for leg, txs in sorted(season.transactions.items()):
         for t in txs:
@@ -105,6 +115,7 @@ def transaction_notes(season: Season, weeks: dict[int, dict[int, TeamWeek]], pla
                         "player": player_name(pid, players), "type": kind,
                         "faab": (t.get("settings") or {}).get("waiver_bid"),
                         "points": total, "started_points": started, "weeks": n,
+                        "value": pickup_value(total, started, pickup_weights),
                     })
             elif kind == "trade":
                 sides = []
@@ -124,7 +135,7 @@ def transaction_notes(season: Season, weeks: dict[int, dict[int, TeamWeek]], pla
                     trades.append({"week": leg, "transaction_id": t.get("transaction_id"),
                                    "sides": sides, "leader": best["roster_id"],
                                    "margin": round(best["started_points"] - min(s["started_points"] for s in sides), 2)})
-    pickups.sort(key=lambda p: (-p["points"], -p["started_points"]))
+    pickups.sort(key=lambda p: (-p["value"], -p["started_points"]))
     return {"best_pickups": pickups[:15], "trades": trades}
 
 

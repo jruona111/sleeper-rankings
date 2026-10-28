@@ -61,6 +61,9 @@ jobs:
             git push
           fi
 
+      - name: Version asset URLs (phones fetch fresh CSS/JS after each deploy)
+        run: sed -i "s/?v=dev/?v=${GITHUB_SHA::8}/g" site/index.html
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3

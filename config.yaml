@@ -17,6 +17,12 @@ weights:
 # Recent form weight = decay ** weeks_ago
 decay: 0.85
 
+# Best waiver pickups (Awards tab) are ranked by
+#   points x all points scored while on the team + started x points scored in the starting lineup
+pickup_weights:
+  points: 0.7
+  started: 0.3
+
 # Monte Carlo playoff simulation
 simulations: 10000
 random_seed: 42

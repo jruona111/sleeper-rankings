@@ -420,7 +420,7 @@
           <div class="detail num">${esc(a.detail)}</div></div></a>`).join("");
     const pickups = tx.best_pickups.slice(0, 8).map((p) => `
       <li><span class="left">${avatar(p.roster_id)}<span><b>${esc(p.player)}</b><br><span class="team-meta">${esc(team(p.roster_id).team_name)} · W${p.week}${p.faab != null ? ` · $${p.faab}` : ""}</span></span></span>
-        <span class="num" style="text-align:right"><b>${fmt(p.points)}</b><br><span class="team-meta">${fmt(p.started_points)} started</span></span></li>`).join("")
+        <span class="num" style="text-align:right"><b>${fmt(p.value ?? p.points)}</b><br><span class="team-meta">${fmt(p.points)} pts · ${fmt(p.started_points)} started</span></span></li>`).join("")
       || `<li>No waiver pickups yet.</li>`;
     const trades = tx.trades.slice().reverse().map((t) => `
       <section class="panel"><h3>Week ${t.week} trade</h3>
@@ -435,7 +435,7 @@
         ${weekSelect(weeks, week, "awards")}</div>
       <div class="awards">${cards}</div>
       <h2>Best waiver pickups</h2>
-      <p class="note" style="margin:-4px 0 10px">Points scored while on the team that added them.</p>
+      <p class="note" style="margin:-4px 0 10px">Score = 70% of all points scored while on the team that added them + 30% of points scored in its starting lineup.</p>
       <section class="panel"><ul class="list">${pickups}</ul></section>
       <h2>Trades</h2>
       <p class="note" style="margin:-4px 0 10px">This season's trades. <a class="link" href="#/trades">Full trade history and pick outcomes ›</a></p>

@@ -35,6 +35,7 @@ class Config:
     dynasty: dict = field(default_factory=dict)  # merged over dynasty.DEFAULTS
     trades: dict = field(default_factory=dict)   # merged over trade_value.DEFAULTS
     win_prob: dict = field(default_factory=dict)  # merged over winprob.DEFAULTS
+    pickup_weights: dict = field(default_factory=lambda: {"points": 0.7, "started": 0.3})
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -58,6 +59,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         dynasty=raw.get("dynasty") or {},
         trades=raw.get("trades") or {},
         win_prob=raw.get("win_prob") or {},
+        pickup_weights={"points": 0.7, "started": 0.3, **{k: float(v) for k, v in (raw.get("pickup_weights") or {}).items()}},
     )
 
 

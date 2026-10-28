@@ -205,7 +205,7 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
     write_json(out_dir / "playoffs.json", odds)
 
     write_json(out_dir / "awards.json", {"weeks": weekly_awards(current, weeks, players)})
-    write_json(out_dir / "transactions.json", transaction_notes(current, weeks, players))
+    write_json(out_dir / "transactions.json", transaction_notes(current, weeks, players, cfg.pickup_weights))
     write_json(out_dir / "history.json", {k: v for k, v in hist.items() if k != "h2h"})
 
     if client is not None:

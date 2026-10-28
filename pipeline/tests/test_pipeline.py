@@ -182,3 +182,12 @@ def test_llm_blurbs_are_cached(monkeypatch):
     out1, src = blurbs.write_blurbs(facts, cache, "m", "low", {1})
     out2, _ = blurbs.write_blurbs(facts, cache, "m", "low", {1})
     assert src == "anthropic" and out1 == out2 and len(calls) == 1
+
+
+def test_pickups_rank_by_weighted_points_and_starts(demo_output):
+    from pipeline.extras import pickup_value
+    assert pickup_value(100.0, 50.0) == 85.0                  # 0.7 x 100 + 0.3 x 50
+    assert pickup_value(100.0, 50.0, {"points": 0.5, "started": 0.5}) == 75.0
+    picks = read(demo_output / "transactions.json")["best_pickups"]
+    assert picks and all(p["value"] == pickup_value(p["points"], p["started_points"]) for p in picks)
+    assert [p["value"] for p in picks] == sorted((p["value"] for p in picks), reverse=True)
