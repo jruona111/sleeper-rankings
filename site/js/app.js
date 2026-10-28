@@ -63,8 +63,20 @@
     if (prev == null) return `<span class="move same">NEW</span>`;
     if (change > 0) return `<span class="move up" aria-label="up ${change}">▲ ${change}</span>`;
     if (change < 0) return `<span class="move down" aria-label="down ${-change}">▼ ${-change}</span>`;
-    return `<span class="move same" aria-label="no change">–</span>`;
+    return `<span class="move same" aria-label="no change">=</span>`;
   }
+  // Rank-by-week sparkline (rank 1 at the top).
+  function spark(ranks, n, w = 56, h = 18) {
+    const pts = ranks.filter((r) => r != null);
+    if (pts.length < 2) return "";
+    const xs = pts.map((_, i) => 2 + (i * (w - 4)) / (pts.length - 1));
+    const ys = pts.map((r) => 2 + ((r - 1) * (h - 4)) / Math.max(1, n - 1));
+    const line = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true">
+      <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${xs[xs.length - 1].toFixed(1)}" cy="${ys[ys.length - 1].toFixed(1)}" r="2.4" fill="var(--accent)"/></svg>`;
+  }
+  const pad2 = (n) => String(n).padStart(2, "0");
   function weekSelect(weeks, current, route) {
     const opts = weeks.slice().reverse().map((w) =>
       `<option value="${w}" ${w === current ? "selected" : ""}>Week ${w}</option>`).join("");
@@ -95,7 +107,7 @@
     Chart.defaults.plugins.legend.display = false;
     Object.assign(Chart.defaults.plugins.tooltip, {
       backgroundColor: css("--surface"), titleColor: css("--ink"), bodyColor: css("--ink-2"),
-      borderColor: css("--border"), borderWidth: 1, padding: 10, cornerRadius: 8, boxPadding: 4,
+      borderColor: css("--border"), borderWidth: 1, padding: 10, cornerRadius: 0, boxPadding: 4,
       usePointStyle: true,
     });
     return true;
@@ -119,29 +131,28 @@
       return;
     }
     const week = pickWeek(weekParam);
-    const data = await loadWeek(week);
+    const [data, teams] = await Promise.all([loadWeek(week), load("teams", "teams.json")]);
+    const n = Object.keys(meta.teams).length;
     const cards = data.rankings.map((r) => {
       const t = team(r.roster_id);
-      return `<li><a class="card" href="#/team/${r.roster_id}">
-        <div class="card-top">
-          <div><div class="rank num">${r.rank}</div>${moveBadge(r.change, r.prev_rank)}</div>
-          ${avatar(r.roster_id)}
-          <div style="min-width:0"><div class="team-name">${esc(t.team_name)}</div>
-            <div class="team-meta num">${record(r.metrics)} · ${fmt(r.metrics.pf, 1)} PPG</div></div>
-          <div class="score num"><b>${fmt(r.score, 1)}</b><span>score</span></div>
+      const hist = (teams[r.roster_id]?.weekly || []).filter((x) => x.week <= week).map((x) => x.rank);
+      return `<li><a class="prow" href="#/team/${r.roster_id}">
+        <div class="prank num">${pad2(r.rank)}</div>
+        <div class="pbody">
+          <div class="pline">${avatar(r.roster_id)}<span class="pname">${esc(t.team_name)}</span><span class="pscore num">${fmt(r.score, 1)}</span></div>
+          <div class="pmeta num">${moveBadge(r.change, r.prev_rank)}<span>${record(r.metrics)} · ${fmt(r.metrics.pf, 1)} PPG${r.metrics.streak ? ` · ${esc(r.metrics.streak)}` : ""}</span>${spark(hist, n)}</div>
+          ${r.blurb ? `<p class="blurb">${esc(r.blurb)}</p>` : ""}
         </div>
-        <div class="meter" aria-hidden="true"><i style="width:${Math.max(2, r.score)}%"></i></div>
-        ${r.blurb ? `<p class="blurb">${esc(r.blurb)}</p>` : ""}
       </a></li>`;
     }).join("");
 
     app.innerHTML = `
       <div class="view-head">
-        <div><h1>Week ${week} Power Rankings</h1>
-          <div class="sub">Score 0–100 · tap a team for details${data.backfilled ? " · backfilled week, no write-ups" : ""}</div></div>
+        <div><h1 class="poster">Power<br>Rank<em>ings</em></h1>
+          <div class="sub">Week ${week} · score out of 100 · line = rank by week${data.backfilled ? " · backfilled week, no write-ups" : ""}</div></div>
         ${weekSelect(meta.weeks, week, "rankings")}
       </div>
-      <ol class="cards">${cards}</ol>
+      <ol class="prows">${cards}</ol>
       <h2>League trends</h2>
       <div class="grid-2">
         <section class="panel">
@@ -163,12 +174,10 @@
     bindWeekSelect();
 
     if (!chartDefaults()) { noCharts("rank-chart"); noCharts("scatter-chart"); return; }
-    const teams = await load("teams", "teams.json");
     const hl = document.getElementById("hl");
     if (store.highlight == null || !teams[store.highlight]) store.highlight = data.rankings[0].roster_id;
     hl.value = store.highlight;
 
-    const n = Object.keys(meta.teams).length;
     const ids = Object.keys(teams);
     const datasets = ids.map((rid) => ({
       label: team(rid).team_name,

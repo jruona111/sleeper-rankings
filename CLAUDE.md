@@ -212,6 +212,7 @@ Top level also has `min_started_weeks`, `recent_par_weeks`, `replacement` and `w
 - Hash routes: `#/rankings[/week]`, `#/odds`, `#/awards[/week]`, `#/stats[/week]`, `#/team/<roster_id>`, `#/future[/<year>|/dynasty]`, `#/future/team/<roster_id>`, `#/trades[/<transaction_id>]` (scrolls to and highlights that card, clearing filters that would hide it), `#/trades/leaderboard`.
 - Trades tab state (team / season / week incl. Preseason / sort: newest, biggest PAR margin, most total PAR / mode: Direct value vs Trade tree) lives in `store.tradeFilter`. Team summary card and Trade Leaderboard are computed client-side from trades.json in the selected mode; W-L = PAR verdicts excluding "too early"; best/worst = highest/lowest net PAR among trades with a verdict.
 - Backfilled weeks (`blurb: null`) render without a blurb paragraph.
+- Look: "poster" style. Archivo (Google Fonts, variable width; condensed 75% for big numerals and headings), square corners, heavy ink rules instead of cards/shadows, boxed tabs, solid movement tags (`.move`). Rankings rows (`.prow`) show a 2-digit rank, rounded-square team picture, score, and a rank-by-week sparkline (`spark()`).
 - Colors are CSS tokens on `:root`; dark mode via `prefers-color-scheme` plus a `data-theme` override saved in localStorage. Charts read tokens at render time and re-render on theme change.
 - Designed at 380px first. Check new UI at phone width with no horizontal page scroll (only `.table-wrap` scrolls sideways).
 - All user-provided strings (team/player names) go through `esc()`.
