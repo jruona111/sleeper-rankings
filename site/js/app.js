@@ -278,8 +278,10 @@
       ["Record", record(s), `PA ${fmt(s.pa)} / game`],
     ].map(([l, v, h]) => `<div class="tile"><div class="label">${l}</div><div class="value num">${esc(v)}</div><div class="hint">${esc(h)}</div></div>`).join("") : "";
 
+    const up = t.upcoming;
+    const upByWeek = Object.fromEntries((up?.games || []).map((g) => [g.week, g]));
     const sched = t.schedule.map((g) => g.future
-      ? `<li class="future"><span class="left"><span class="wk">W${g.week}</span><span class="res">·</span><span>vs ${name(g.opponent)}</span></span><span>upcoming</span></li>`
+      ? `<li class="future"><span class="left"><span class="wk">W${g.week}</span><span class="res">·</span><span>vs ${name(g.opponent)}</span></span><span class="num">${upByWeek[g.week] ? `${pct(upByWeek[g.week].win_prob, 0)} to win` : "upcoming"}</span></li>`
       : `<li><span class="left"><span class="wk">W${g.week}</span><span class="res ${g.result || ""}">${g.result || "–"}</span>
           ${g.opponent != null ? `<a href="#/team/${g.opponent}"><span>${g.playoff ? "🏆 " : ""}vs ${name(g.opponent)}</span></a>` : `<span>${g.playoff ? "Playoffs" : "Bye"}</span>`}</span>
           <span class="num">${fmt(g.pf, 2)}${g.pa != null ? ` – ${fmt(g.pa, 2)}` : ""}</span></li>`).join("");
@@ -289,6 +291,31 @@
         <span class="num"><b>${h.w}-${h.l}${h.t ? `-${h.t}` : ""}</b> <span class="team-meta">${fmt(h.pf / (h.w + h.l + h.t))}–${fmt(h.pa / (h.w + h.l + h.t))}</span></span></li>`).join("")
       : `<li>No games against current teams yet.</li>`;
 
+    const who = (list) => list.map((p) => `${esc(p.name)}${p.status ? ` (${esc(p.status)})` : ""}`).join(", ");
+    const notes = (g, opp) => {
+      const byes = opp ? g.opp_byes : g.byes, hurt = opp ? g.opp_hurt : g.hurt;
+      const bits = [byes.length ? `<b>Bye:</b> ${who(byes)}` : "", hurt.length ? `<b>Out/hurt:</b> ${who(hurt)}` : "",
+        !opp && g.fill_ins.length ? `<b>Waiver fill-in:</b> ${esc(g.fill_ins.join(", "))}` : ""].filter(Boolean);
+      return bits.length ? `<p class="g-note${opp ? " opp" : ""}">${opp ? `<span class="g-who">${name(g.opponent)}</span> ` : ""}${bits.join(" · ")}</p>` : "";
+    };
+    const games = up && up.games.length ? up.games.map((g) => {
+      const fav = g.win_prob >= 0.5;
+      const lineup = g.lineup ? `<details class="breakdown"><summary>Projected lineup</summary><ul class="bd">${g.lineup.map((x) =>
+        `<li><span class="bd-name"><span class="team-meta" style="display:inline;margin-right:6px">${esc(x.slot)}</span>${esc(x.name || "Empty")}</span><span class="num">${fmt(x.pts)}</span></li>`).join("")}</ul>
+        <p class="team-meta" style="margin:6px 0 0">Raw projections. Expected score adjusts these by the league's projection accuracy and this manager's factor.</p></details>` : "";
+      return `<li class="game">
+        <div class="g-head"><span class="g-wk num">W${g.week}</span>${avatar(g.opponent)}<a href="#/team/${g.opponent}" class="g-opp">vs ${name(g.opponent)}</a>
+          <span class="g-pct num ${fav ? "fav" : "dog"}">${pct(g.win_prob, 0)}</span></div>
+        <div class="wp" role="img" aria-label="${pct(g.win_prob, 0)} chance to win"><i style="width:${(100 * g.win_prob).toFixed(1)}%"></i></div>
+        <div class="g-score num">Projected <b>${fmt(g.proj)}</b> – ${fmt(g.opp_proj)} <span class="team-meta">± ${fmt(g.sd, 0)}</span>${g.source !== "sleeper" ? ` <span class="team-meta">(season averages)</span>` : ""}</div>
+        ${notes(g, false)}${notes(g, true)}${lineup}
+      </li>`;
+    }).join("") : "";
+    const mf = up?.manager;
+    const upcoming = games ? `<h2>Upcoming games</h2>
+      <p class="note" style="margin:-4px 0 10px">Projected rest of regular season: <b>${fmt(up.proj_wins, 1)}–${fmt(up.proj_losses, 1)}</b>${mf && mf.weeks ? ` · manager factor <b>×${fmt(mf.factor, 2)}</b> (actual scores ran ${signed(100 * (mf.raw - 1), 0)}% vs. projections over ${mf.weeks} weeks)` : ""}</p>
+      <ol class="games">${games}</ol>
+      <p class="note">Win chance compares both teams' expected scores: the best lineup from Sleeper's weekly projections (league scoring), with bench players or a waiver pickup covering byes and injuries, then adjusted by how this season's scores compared with projections, league-wide and for each manager. ± is the typical miss.</p>` : "";
     const mk = s?.worst_mistake;
     const at = t.alltime;
     app.innerHTML = `
@@ -301,6 +328,7 @@
       </div>
       ${row?.blurb ? `<p class="blurb" style="margin:0 0 14px">${esc(row.blurb)}</p>` : ""}
       <div class="tiles">${tiles}</div>
+      ${upcoming}
       <h2>Season</h2>
       <div class="grid-2">
         <section class="panel"><h3>Weekly score vs. max</h3><p class="sub">Bars: points scored. Line: best possible lineup.</p>

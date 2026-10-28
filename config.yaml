@@ -90,3 +90,11 @@ trades:
   replacement:
     flex_usage: season
     pool_scale: 1.0
+
+# Team pages: upcoming games' projected scores and win probability. Formulas in CLAUDE.md.
+win_prob:
+  waiver_rank: 3            # a slot nobody on the roster can fill well uses the Nth best free agent
+  manager_prior_weeks: 4    # pseudo-weeks shrinking each manager's factor toward average
+  ir_weeks: 4               # IR / PUP / suspended players count 0 for this many upcoming games
+  injury_next_game: { Out: 0.0, Doubtful: 0.25, Questionable: 0.9 }  # next game only
+  min_sd: 12.0              # floor on a team's weekly score SD

@@ -155,6 +155,25 @@ h2 { font-size: 24px; font-weight: 900; font-stretch: 75%; text-transform: upper
 .pmeta .spark { margin-left: auto; flex: none; }
 .prow .blurb { margin-top: 8px; }
 
+/* -- upcoming games ---------------------------------------------------------- */
+.games { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+.game { padding: 12px 0; border-bottom: 1px solid var(--ink); }
+.g-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.g-head .avatar { width: 26px; height: 26px; font-size: 10px; }
+.g-wk { font-size: 26px; font-weight: 900; font-stretch: 75%; line-height: 1; width: 46px; flex: none; }
+.g-opp { flex: 1; min-width: 0; font-weight: 800; font-stretch: 87.5%; text-transform: uppercase; overflow-wrap: anywhere; line-height: 1.15; }
+.g-pct { font-size: 30px; font-weight: 900; font-stretch: 75%; line-height: 1; }
+.g-pct.fav { color: var(--accent); }
+.g-pct.dog { color: var(--down); }
+.wp { height: 8px; background: var(--axis); margin: 8px 0 6px; }
+.wp i { display: block; height: 100%; background: var(--accent); }
+.g-score { font-size: 13.5px; color: var(--ink-2); }
+.g-score b { color: var(--ink); }
+.g-note { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.g-note.opp { color: var(--muted); }
+.g-who { font-weight: 700; text-transform: uppercase; font-size: 11.5px; }
+.game .breakdown { margin-top: 4px; }
+
 /* -- charts --------------------------------------------------------------- */
 .panel { background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--ink); border-radius: var(--radius); padding: 14px; box-shadow: none; }
 .panel + .panel { margin-top: 12px; }

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .backtest import run_backtest
 from .blurbs import write_blurbs
-from . import dynasty, trades
+from . import dynasty, trades, winprob
 from .config import CACHE_PATH, SITE_DATA, Config, league_id_is_set, load_config
 from .extras import describe_mistake, league_history, transaction_notes, weekly_awards
 from .league import Season, load_history, load_season
@@ -185,6 +185,16 @@ def build(cfg: Config, current: Season, history: list[Season], players: dict, st
             "h2h": h2h,
             "alltime": next((a for a in hist["alltime"] if a["owner_id"] == owner), None),
         }
+    if client is not None and current.future:
+        upcoming = _optional(log, "Win probabilities", lambda: winprob.load_and_build(
+            client, current, players, cfg.win_prob), {})
+        for rid, data in upcoming.items():
+            if rid in teams_out:
+                teams_out[rid]["upcoming"] = data
+        model = upcoming.get("_model")
+        if model:
+            log(f"Win probabilities: {sum(len(v['games']) for k, v in upcoming.items() if k != '_model')} team-games, "
+                f"calibration x{model['c']} over {model['calibration_weeks']} weeks, SD {model['sd']}")
     write_json(out_dir / "teams.json", teams_out)
 
     if latest:

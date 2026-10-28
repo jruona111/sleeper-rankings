@@ -5,7 +5,7 @@ Sleeper fantasy football power rankings: a Python pipeline writes JSON; a static
 ## Layout
 
 ```
-config.yaml                 league_id, ranking weights, decay, simulations, blurb model, dynasty model, trade valuation
+config.yaml                 league_id, ranking weights, decay, simulations, blurb model, dynasty model, trade valuation, win probability
 requirements.txt
 pipeline/
   run.py                    entry point (python -m pipeline); orchestrates everything, writes site/data/*
@@ -16,6 +16,7 @@ pipeline/
   metrics.py                TeamWeek per team-week; season-to-date metrics; remaining SOS
   rankings.py               z-scores -> weighted composite -> 0-100 score; rank change + "driver" metric
   playoffs.py               Monte Carlo playoff/bye/#1 seed/title odds
+  winprob.py                upcoming games: projected scores (Sleeper projections) and win probability per game
   extras.py                 weekly awards, transaction notes, all-time records + head-to-head
   storylines.py             per-team "facts" object for each week's blurb
   dynasty.py                Future Rankings: per-player 3-year projections, projected lineups, pick value
@@ -24,7 +25,7 @@ pipeline/
   blurbs.py                 Claude blurbs (structured JSON output) with template fallback; cached by facts hash
   backtest.py               week-N ranks predicting week-N+1 winners; python -m pipeline.backtest
   demo.py                   synthetic two-season league in Sleeper API shapes (--demo)
-  tests/                    pytest: lineup optimizer, metrics, dynasty model, pick chains, trade value/trees, end-to-end demo build
+  tests/                    pytest: lineup optimizer, metrics, dynasty model, pick chains, trade value/trees, win probability, end-to-end demo build
 site/
   index.html, css/style.css, js/app.js   vanilla JS SPA with hash routes; Chart.js 4.4.1 from cdnjs
   manifest.webmanifest, icons/           Add to Home Screen
@@ -66,6 +67,13 @@ python -m http.server 8765 --directory site # view the site
 - **Backfill**: every build ranks every completed week from data through that week only (week N never sees week N+1). `backfill --from A --to B` runs the normal build and marks weeks A..B `backfilled`: ranked and charted, but no blurbs (`blurb`/`blurb_source` null) and no Claude call. The mark lives in the committed `rankings/week-N.json` (`"backfilled": true`) and every later build carries it over, so CI keeps it. To un-backfill a week, delete its JSON and rebuild.
 - **Weekly player stats** (`/stats/nfl/regular/{season}/{week}`, unofficial): previous NFL season weeks 1–18 + current completed weeks; cached forever once final. A failed week is skipped (rostered players' matchup points still count). Points = Σ `scoring_settings[k]·stat[k]`, falling back to `pts_ppr`; a rostered player's actual matchup points win when present.
 - **Trades**: transaction rounds 0–18 of every season (current season: 0 through `state.week`; offseason trades are filed in round 1), type `trade`, status `complete`, deduped by `transaction_id`. A pick is keyed `(season, round, original roster_id)`; its chain = every trade's `draft_picks` entry with that key, ordered by `status_updated`. Draft outcome: `/league/{id}/drafts` → `/draft/{id}` (`slot_to_roster_id`) + `/draft/{id}/picks`; a pick's original roster = `slot_to_roster_id[draft_slot]` (traded picks keep the original slot), falling back to the draft's `traded_picks` when unambiguous. Outcome `made` (player + who used it), `unused` (that season's draft is complete without it) or `pending` (owner = chain end, overridden by `/draft/{id}/traded_picks` and `/league/{id}/traded_picks`). Team names are the current team for the roster_id.
+
+## Upcoming games / win probability (winprob.py; parameters in config.yaml `win_prob:`)
+
+- **Player projections**: `/projections/nfl/regular/{season}/{week}` (unofficial; cached forever for completed weeks, 6 h otherwise), points = league scoring on the projected stat line (players without `gp` are not projected). An NFL team with nobody projected that week is on **bye**; an unprojected player whose team plays counts as out (listed with his injury status).
+- **Team projection** for each remaining regular-season week (`season.future`): optimal lineup (lineup.optimal_lineup) over the current roster minus `taxi`, with injury multipliers (next game only: `injury_next_game` Out 0 / Doubtful 0.25 / Questionable 0.9; IR slot or IR/PUP/Sus/NA status: 0 for the next `ir_weeks` games) and waiver fill-ins: per position, pseudo-players at the projection of the `waiver_rank`-th best unrostered player that week (one per starting slot the position fits), used only where they beat the roster's option.
+- **Calibration** on this season's completed regular-season weeks, replayed with that week's projections and the then-roster (matchup `players`): c = Σ actual / Σ projected optimal (league); manager factor = Σ actual / Σ c·projected for that team, shrunk (n·raw + k)/(n + k), k = `manager_prior_weeks`; SD = population SD of (actual − c·proj) league-wide, per team shrunk the same way (floored at `min_sd`).
+- **Expected score** = c · factor · projected optimal; **win probability** = Φ((μa − μb) / √(σa² + σb²)). Projected rest-of-season W-L = Σ win probabilities. Without projections (e.g. demo) it falls back to each player's season average (no bye detection).
 
 ## Trade value (trade_value.py; parameters in config.yaml `trades:`)
 
@@ -138,7 +146,9 @@ All numbers are floats rounded to 2 dp (percent-type fields to 4 dp, 0–1 scale
 `Mistake`: `slot, benched, benched_points, started (player_id|null), started_points, gain` (+ `benched_name, started_name, week` where shown).
 
 ### teams.json
-`{ "<roster_id>": Team & { season: SeasonMetrics|null, remaining_sos: float|null, weekly: [TeamWeek & {rank, score}], schedule: [{week, opponent, pf?, pa?, result?, playoff?, future}], h2h: [{opponent, w, l, t, pf, pa, games: [{season, week, pf, pa, result, playoff}]}], alltime: AllTime|null } }`
+`{ "<roster_id>": Team & { season: SeasonMetrics|null, remaining_sos: float|null, upcoming?: Upcoming, weekly: [TeamWeek & {rank, score}], schedule: [{week, opponent, pf?, pa?, result?, playoff?, future}], h2h: [{opponent, w, l, t, pf, pa, games: [{season, week, pf, pa, result, playoff}]}], alltime: AllTime|null } }`
+
+`Upcoming = { games: [{ week, opponent, win_prob (0-1), proj, opp_proj, sd, opp_sd, lineup_proj (raw projected optimal), source: "sleeper"|"season_avg", byes, hurt, opp_byes, opp_hurt: [{player_id, name, pos, status}] (players projecting 8+ in some week, max 4), fill_ins: [slot], lineup: [{slot, player_id|null, name, pts}] (first game only, else null) }], proj_wins, proj_losses, manager: { factor, raw, weeks, sd } }`
 
 ### playoffs.json
 ```jsonc

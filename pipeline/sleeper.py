@@ -197,6 +197,15 @@ class SleeperClient:
     def draft_traded_picks(self, draft: dict) -> list[dict]:
         return self._draft_scoped(draft, "/traded_picks") or []
 
+    def projections(self, season: str, week: int, completed: bool) -> dict | None:
+        """Weekly player projections (unofficial endpoint); a completed week's are final. None if it fails."""
+        try:
+            data = self._get(f"/projections/nfl/regular/{season}/{week}", max_age=6 * HOUR, permanent=completed)
+        except RuntimeError as err:
+            print(f"  ! projections {season} week {week} unavailable: {err}")
+            return None
+        return data if isinstance(data, dict) else None
+
     def stats(self, season: str, week: int, completed: bool) -> dict | None:
         """Weekly player stats (unofficial endpoint). None if it fails."""
         try:
